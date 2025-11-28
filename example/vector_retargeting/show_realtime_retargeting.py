@@ -188,7 +188,7 @@ def main(
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
 
-    queue = multiprocessing.Queue(maxsize=1000)
+    queue = multiprocessing.Queue(maxsize=1) # original size was 1000 but reduced to 1 (Erin's PC has delay issue)
     producer_process = multiprocessing.Process(
         target=produce_frame, args=(queue, camera_path)
     )
