@@ -11,6 +11,7 @@ import tyro
 from loguru import logger
 from sapien.asset import create_dome_envmap
 from sapien.utils import Viewer
+from pytransform3d import rotations  # [WRIST PATCH] For rotation matrix/quaternion conversions
 
 from dex_retargeting.constants import (
     RobotName,
@@ -20,6 +21,23 @@ from dex_retargeting.constants import (
 )
 from dex_retargeting.retargeting_config import RetargetingConfig
 from single_hand_detector import SingleHandDetector
+
+
+# [WRIST PATCH] Convert wrist_rot to a 3x3 rotation matrix
+def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """Convert wrist_rot to a 3x3 rotation matrix.
+    - If 3x3: use directly
+    - If length 4: treat as quaternion (w, x, y, z)
+    - If None or other shape: ignore
+    """
+    if wrist_rot is None:
+        return None
+    wrist_rot = np.asarray(wrist_rot)
+    if wrist_rot.shape == (3, 3):
+        return wrist_rot
+    if wrist_rot.shape == (4,):
+        return rotations.matrix_from_quaternion(wrist_rot)
+    return None
 
 
 def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path: str):
@@ -35,7 +53,7 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
 
     config = RetargetingConfig.load_from_file(config_path)
 
-    # Setup
+    # Scene setup
     scene = sapien.Scene()
     render_mat = sapien.render.RenderMaterial()
     render_mat.base_color = [0.06, 0.08, 0.12, 1]
@@ -68,11 +86,13 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
     viewer.control_window.toggle_camera_lines(False)
     viewer.set_camera_pose(cam.get_local_pose())
 
-    # Load robot and set it to a good pose to take picture
+    # Load robot
     loader = scene.create_urdf_loader()
     filepath = Path(config.urdf_path)
     robot_name = filepath.stem
     loader.load_multiple_collisions_from_file = True
+
+    # Scaling rules depending on robot type
     if "ability" in robot_name:
         loader.scale = 1.5
     elif "dclaw" in robot_name:
@@ -88,6 +108,7 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
     elif "svh" in robot_name:
         loader.scale = 1.5
 
+    # Load GLB-based URDF if exists
     if "glb" not in robot_name:
         filepath = str(filepath).replace(".urdf", "_glb.urdf")
     else:
@@ -95,6 +116,7 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
 
     robot = loader.load(filepath)
 
+    # Adjust initial robot pose to avoid clipping
     if "ability" in robot_name:
         robot.set_pose(sapien.Pose([0, 0, -0.15]))
     elif "shadow" in robot_name:
@@ -110,7 +132,11 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
     elif "svh" in robot_name:
         robot.set_pose(sapien.Pose([0, 0, -0.13]))
 
-    # Different robot loader may have different orders for joints
+    # [WRIST PATCH] Save initial robot pose (position+rotation) for wrist rotation blending
+    base_robot_pose = robot.get_pose()
+    calib_wrist_R = [None]  # Store first detected wrist orientation for calibration
+
+    # Mapping from retargeting joint order to SAPIEN joint order
     sapien_joint_names = [joint.get_name() for joint in robot.get_active_joints()]
     retargeting_joint_names = retargeting.joint_names
     retargeting_to_sapien = np.array(
@@ -122,32 +148,61 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
             bgr = queue.get(timeout=5)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         except Empty:
-            logger.error(
-                "Fail to fetch image from camera in 5 secs. Please check your web camera device."
-            )
+            logger.error("Failed to fetch camera frame for 5 seconds.")
             return
 
-        _, joint_pos, keypoint_2d, _ = detector.detect(rgb)
+        # SingleHandDetector returns: (num_hands, joint_pos, keypoint_2d, wrist_rot_raw)
+        num_hands, joint_pos, keypoint_2d, wrist_rot_raw = detector.detect(rgb)
+        wrist_R = _wrist_rot_to_matrix(wrist_rot_raw)
+
         bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
         cv2.imshow("realtime_retargeting_demo", bgr)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
+        # [WRIST PATCH] Calibrate wrist orientation using the first valid frame
+        if wrist_R is not None and calib_wrist_R[0] is None:
+            calib_wrist_R[0] = wrist_R.copy()
+            logger.info("Wrist orientation calibrated.")
+
         if joint_pos is None:
-            logger.warning(f"{hand_type} hand is not detected.")
+            logger.warning(f"{hand_type} hand not detected.")
         else:
+            # Build retargeting input (vector or position)
             retargeting_type = retargeting.optimizer.retargeting_type
             indices = retargeting.optimizer.target_link_human_indices
+
             if retargeting_type == "POSITION":
-                indices = indices
                 ref_value = joint_pos[indices, :]
             else:
                 origin_indices = indices[0, :]
                 task_indices = indices[1, :]
                 ref_value = joint_pos[task_indices, :] - joint_pos[origin_indices, :]
+
+            # Finger retargeting (same as original)
             qpos = retargeting.retarget(ref_value)
             robot.set_qpos(qpos[retargeting_to_sapien])
 
+            # [WRIST PATCH] Apply wrist orientation to robot base rotation
+            if wrist_R is not None and calib_wrist_R[0] is not None:
+                # Relative hand wrist rotation: R_rel = R_current * R_calib^T
+                R_rel = wrist_R @ calib_wrist_R[0].T
+
+                # Retrieve initial robot rotation
+                base_T = base_robot_pose.to_transformation_matrix()
+                R_robot0 = base_T[:3, :3]
+
+                # New robot rotation = relative wrist rotation * initial robot rotation
+                R_robot = R_rel @ R_robot0
+
+                # Convert to quaternion
+                q_robot = rotations.quaternion_from_matrix(R_robot)
+
+                # Update robot base pose: position stays, rotation changes
+                new_pose = sapien.Pose(base_robot_pose.p, q_robot)
+                robot.set_pose(new_pose)
+
+        # Render multiple times for smoother display
         for _ in range(2):
             viewer.render()
 
@@ -173,15 +228,8 @@ def main(
     camera_path: Optional[str] = None,
 ):
     """
-    Detects the human hand pose from a video and translates the human pose trajectory into a robot pose trajectory.
-
-    Args:
-        robot_name: The identifier for the robot. This should match one of the default supported robots.
-        retargeting_type: The type of retargeting, each type corresponds to a different retargeting algorithm.
-        hand_type: Specifies which hand is being tracked, either left or right.
-            Please note that retargeting is specific to the same type of hand: a left robot hand can only be retargeted
-            to another left robot hand, and the same applies for the right hand.
-        camera_path: the device path to feed to opencv to open the web camera. It will use 0 by default.
+    Detect the human hand pose from a live camera stream and retarget it to a robot hand.
+    Now supports wrist orientation retargeting (robot rotates like the human wrist).
     """
     config_path = get_default_config_path(robot_name, retargeting_type, hand_type)
     robot_dir = (
