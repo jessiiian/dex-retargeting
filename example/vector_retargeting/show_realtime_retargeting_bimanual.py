@@ -43,6 +43,23 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
+def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
+    """Project relative wrist rotation to a single dominant axis
+    to avoid diagonal flipping.
+
+    We convert R_rel to Euler angles (XYZ) and keep only rotation
+    around the X axis (up–down flexion). Y/Z components are zeroed.
+    """
+    # pytransform3d: order (0,1,2) means X, Y, Z axes
+    rx, ry, rz = rotations.euler_from_matrix(
+        R_rel, 0, 1, 2, extrinsic=False
+    )
+    # Keep only rx (up–down), ignore ry, rz to avoid weird diagonal spinning
+    R_simplified = rotations.matrix_from_euler(
+        0, 1, 2, rx, 0.0, 0.0, extrinsic=False
+    )
+    return R_simplified
+
 # View correction for mapping camera(hand) frame → robot frame.
 # This is the tilt that you experimentally found to look good:
 # axis = [1, 0, 1], angle = -90 deg
@@ -301,6 +318,10 @@ def start_retargeting(
             # Wrist
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+
+                # NEW: project wrist rotation onto a single axis to avoid diagonal flipping
+                R_rel_R = _simplify_wrist_rotation(R_rel_R)
+
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
 
@@ -331,6 +352,10 @@ def start_retargeting(
             # Wrist
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
+
+                # NEW: simplify wrist rotation
+                R_rel_L = _simplify_wrist_rotation(R_rel_L)
+
                 base_T_L = base_pose_left.to_transformation_matrix()
                 R_robot0_L = base_T_L[:3, :3]
 
