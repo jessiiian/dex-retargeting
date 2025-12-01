@@ -44,18 +44,27 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Project wrist rotation to 1DOF (X-axis only) to avoid diagonal flipping."""
-    # Extract euler angles
-    rx, ry, rz = rotations.euler_from_matrix(R_rel, 0, 1, 2, extrinsic=False)
+    """Project wrist rotation to a single axis (X) to avoid diagonal flipping.
 
-    # Keep only rx, ignore other 2 axes
-    angles = np.array([rx, 0.0, 0.0])
+    We use rotation vector form (axis * angle), then keep only the component
+    along a chosen axis, here X-axis = [1, 0, 0].
+    """
+    # Choose a dominant axis for wrist flexion
+    axis = np.array([1.0, 0.0, 0.0])  # X axis; change to [0,1,0] or [0,0,1] if needed
 
-    # Convert back to rotation matrix
-    R_simplified = rotations.matrix_from_euler(
-        0, 1, 2, angles, extrinsic=False
-    )
+    # Convert relative rotation to rotation vector (axis * angle)
+    rot_vec = rotations.vector_from_rotation_matrix(R_rel)  # shape (3,)
+
+    # Project rotation vector onto chosen axis
+    angle_proj = float(np.dot(rot_vec, axis))  # scalar
+
+    # Build axis-angle: [ax, ay, az, angle]
+    axis_angle = np.array([axis[0], axis[1], axis[2], angle_proj], dtype=float)
+
+    # Back to rotation matrix
+    R_simplified = rotations.matrix_from_axis_angle(axis_angle)
     return R_simplified
+
 
 # View correction for mapping camera(hand) frame → robot frame.
 # This is the tilt that you experimentally found to look good:
@@ -316,7 +325,7 @@ def start_retargeting(
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
 
-                # NEW: project wrist rotation onto a single axis to avoid diagonal flipping
+                # Simplify relative rotation to avoid diagonal flipping
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
 
                 base_T_R = base_pose_right.to_transformation_matrix()
@@ -350,7 +359,7 @@ def start_retargeting(
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
 
-                # NEW: simplify wrist rotation
+                # Simplify relative rotation
                 R_rel_L = _simplify_wrist_rotation(R_rel_L)
 
                 base_T_L = base_pose_left.to_transformation_matrix()
