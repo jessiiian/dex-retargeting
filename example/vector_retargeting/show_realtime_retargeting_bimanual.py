@@ -20,7 +20,7 @@ from dex_retargeting.constants import (
     get_default_config_path,
 )
 from dex_retargeting.retargeting_config import RetargetingConfig
-from multi_hand_detector import MultiHandDetector  # <-- use the multi-hand version
+from multi_hand_detector import MultiHandDetector  # your multi-hand version
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def _load_robot_for_config(
 
 
 # ---------------------------------------------------------------------------
-# Main retargeting process (bimanual)
+# Main retargeting process (bimanual, 5s auto-calibration)
 # ---------------------------------------------------------------------------
 
 def start_retargeting(
@@ -133,7 +133,15 @@ def start_retargeting(
     robot_name: RobotName,
     retargeting_type: RetargetingType,
 ):
-    """Retarget both hands in one scene using a single camera stream."""
+    """
+    Bimanual retargeting (right + left hand) with wrist orientation.
+    Wrist calibration:
+      - No key press needed.
+      - After the viewer starts, we wait 5 seconds.
+      - Around 5 seconds, current wrist orientations (for each visible hand)
+        are stored as calibration poses.
+      - From then on, all wrist rotations are relative to that pose.
+    """
     RetargetingConfig.set_default_urdf_dir(str(robot_dir))
     logger.info(
         f"Start bimanual retargeting with robot={robot_name}, type={retargeting_type}"
@@ -176,7 +184,7 @@ def start_retargeting(
         sapien.Pose([2, 1, 2], [0.707, 0, 0.707, 0]), np.array([1, 1, 1]), 5, 5
     )
 
-    # Camera
+    # Camera (you said you didn't change camera settings, so keep as-is)
     cam = scene.add_camera(
         name="Cheese!", width=600, height=600, fovy=1, near=0.1, far=10
     )
@@ -189,7 +197,7 @@ def start_retargeting(
     viewer.control_window.toggle_camera_lines(False)
     viewer.set_camera_pose(cam.get_local_pose())
 
-    # Load right/left robots with a small XY offset so they don't overlap
+    # Load right/left robots with a small Y-offset so they don't overlap
     robot_right, base_pose_right = _load_robot_for_config(
         scene, cfg_right.urdf_path, xy_offset=np.array([0.0, +0.12, 0.0])
     )
@@ -200,9 +208,13 @@ def start_retargeting(
     base_pos_right = base_pose_right.p.copy()
     base_pos_left = base_pose_left.p.copy()
 
-    # Wrist calibration per hand
+    # Wrist calibration per hand (None until calibrated)
     calib_wrist_R_right = [None]
     calib_wrist_R_left = [None]
+
+    # When did we start? (for 5s auto-calibration)
+    start_time = time.time()
+    calibration_delay = 5.0  # seconds
 
     # Mapping from retargeting joint order to SAPIEN joint order (per robot)
     # Right hand
@@ -219,27 +231,23 @@ def start_retargeting(
         [retargeting_joint_names_L.index(name) for name in sapien_joint_names_L]
     ).astype(int)
 
-    # Last wrist rotations (used for manual calibration with 'c')
-    last_wrist_R_right = None
-    last_wrist_R_left = None
-
     while True:
         try:
             bgr = queue.get(timeout=5)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         except Empty:
-            logger.error("Failed to fetch camera frame for 5 seconds.")
+            logger.error("Failed to fetch image from camera in 5 seconds.")
             return
 
         # Detect both hands
         hands = detector.detect(rgb)
 
-        # Collect 2D keypoints for drawing
+        # Draw all detected hands
         keypoint_2d_list = [h["keypoint_2d"] for h in hands]
         bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d_list, style="default")
         cv2.imshow("realtime_retargeting_demo", bgr)
 
-        # Pre-extract per-hand data
+        # Extract per-hand data
         joint_pos_R = None
         joint_pos_L = None
         wrist_rot_R_raw = None
@@ -257,30 +265,20 @@ def start_retargeting(
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
 
-        last_wrist_R_right = wrist_R_R if wrist_R_R is not None else last_wrist_R_right
-        last_wrist_R_left = wrist_R_L if wrist_R_L is not None else last_wrist_R_left
+        # 5s auto-calibration: after delay, use current wrist pose as reference
+        elapsed = time.time() - start_time
+        if elapsed >= calibration_delay:
+            if calib_wrist_R_right[0] is None and wrist_R_R is not None:
+                calib_wrist_R_right[0] = wrist_R_R.copy()
+                logger.info("Right wrist orientation calibrated (auto after 5s).")
+            if calib_wrist_R_left[0] is None and wrist_R_L is not None:
+                calib_wrist_R_left[0] = wrist_R_L.copy()
+                logger.info("Left wrist orientation calibrated (auto after 5s).")
 
-        # Auto calibration: first valid wrist rotation per hand
-        if wrist_R_R is not None and calib_wrist_R_right[0] is None:
-            calib_wrist_R_right[0] = wrist_R_R.copy()
-            logger.info("Right wrist orientation calibrated (auto).")
-
-        if wrist_R_L is not None and calib_wrist_R_left[0] is None:
-            calib_wrist_R_left[0] = wrist_R_L.copy()
-            logger.info("Left wrist orientation calibrated (auto).")
-
-        # Keyboard controls
+        # Keyboard controls: only 'q' to quit
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
-        elif key == ord("c"):
-            # Manual calibration for both hands using the latest valid wrist rotations
-            if last_wrist_R_right is not None:
-                calib_wrist_R_right[0] = last_wrist_R_right.copy()
-                logger.info("Right wrist orientation calibrated (manual 'c').")
-            if last_wrist_R_left is not None:
-                calib_wrist_R_left[0] = last_wrist_R_left.copy()
-                logger.info("Left wrist orientation calibrated (manual 'c').")
 
         # ----------------- RIGHT HAND RETARGETING -----------------
         if joint_pos_R is not None:
@@ -311,8 +309,6 @@ def start_retargeting(
 
                 new_pose_R = sapien.Pose(base_pos_right, q_robot_R)
                 robot_right.set_pose(new_pose_R)
-        # else:
-        #     logger.warning("Right hand not detected.")
 
         # ----------------- LEFT HAND RETARGETING ------------------
         if joint_pos_L is not None:
@@ -343,8 +339,6 @@ def start_retargeting(
 
                 new_pose_L = sapien.Pose(base_pos_left, q_robot_L)
                 robot_left.set_pose(new_pose_L)
-        # else:
-        #     logger.warning("Left hand not detected.")
 
         # Render a few times for smoother display
         for _ in range(2):
@@ -383,9 +377,12 @@ def main(
     Detect the human hand poses from a live camera stream and retarget them
     to two robot hands (right and left) in the same SAPIEN scene.
 
+    Wrist calibration:
+        - No key interaction needed.
+        - After 5 seconds, the current hand poses (for each visible hand)
+          are used as the wrist reference orientation.
     Controls:
         q : quit
-        c : recalibrate both wrists using the current hand poses
     """
     robot_dir = (
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
