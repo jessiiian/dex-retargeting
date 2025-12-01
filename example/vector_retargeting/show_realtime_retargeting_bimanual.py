@@ -191,10 +191,10 @@ def start_retargeting(
 
     # Load right/left robots with a small XY offset so they don't overlap
     robot_right, base_pose_right = _load_robot_for_config(
-        scene, cfg_right.urdf_path, xy_offset=np.array([+0.08, 0.0, 0.0])
+        scene, cfg_right.urdf_path, xy_offset=np.array([0.0, +0.12, 0.0])
     )
     robot_left, base_pose_left = _load_robot_for_config(
-        scene, cfg_left.urdf_path, xy_offset=np.array([-0.08, 0.0, 0.0])
+        scene, cfg_left.urdf_path, xy_offset=np.array([0.0, -0.12, 0.0])
     )
 
     base_pos_right = base_pose_right.p.copy()
