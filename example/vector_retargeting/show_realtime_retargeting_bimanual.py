@@ -44,19 +44,16 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Project relative wrist rotation to a single dominant axis
-    to avoid diagonal flipping.
+    """Project wrist rotation to 1DOF (X-axis only) to avoid diagonal flipping."""
+    # Extract euler angles
+    rx, ry, rz = rotations.euler_from_matrix(R_rel, 0, 1, 2, extrinsic=False)
 
-    We convert R_rel to Euler angles (XYZ) and keep only rotation
-    around the X axis (up–down flexion). Y/Z components are zeroed.
-    """
-    # pytransform3d: order (0,1,2) means X, Y, Z axes
-    rx, ry, rz = rotations.euler_from_matrix(
-        R_rel, 0, 1, 2, extrinsic=False
-    )
-    # Keep only rx (up–down), ignore ry, rz to avoid weird diagonal spinning
+    # Keep only rx, ignore other 2 axes
+    angles = np.array([rx, 0.0, 0.0])
+
+    # Convert back to rotation matrix
     R_simplified = rotations.matrix_from_euler(
-        0, 1, 2, rx, 0.0, 0.0, extrinsic=False
+        0, 1, 2, angles, extrinsic=False
     )
     return R_simplified
 
