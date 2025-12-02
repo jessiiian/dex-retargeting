@@ -45,30 +45,49 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Keep only rotation around Z axis (with inverted direction to match operator)."""
+    """Keep only pitch-like rotation (around Y) from the relative wrist rotation.
+
+    - Input : 3x3 relative rotation matrix R_rel (wrist_R @ calib_wrist_R.T)
+    - Output: 3x3 rotation that rotates only around Y axis
+              → '손목을 위아래로' 움직이는 느낌에 대응
+    """
     R_rel = np.asarray(R_rel, dtype=float)
 
+    # Sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # Invert sign so that human "inward" twist → robot "inward" twist
-    angle_z = -np.arctan2(R_rel[1, 0], R_rel[0, 0])
+    # Decompose relative rotation into Euler angles
+    # ai, aj, ak = 0, 1, 2 → X, Y, Z
+    rx, ry, rz = rotations.euler_from_matrix(
+        R_rel, 0, 1, 2, extrinsic=False
+    )
 
-    if abs(angle_z) < 1e-4:
+    # Use only Y-axis component as "pitch" (위/아래 들썩임)
+    # 부호는 상황에 따라 반대로 느껴질 수 있어서 일단 -ry로 두고,
+    # 필요하면 여기 ry로 바꾸면 됨.
+    pitch = -ry
+
+    # 너무 작은 노이즈는 무시
+    if abs(pitch) < 1e-3:
         return np.eye(3)
 
-    cz = np.cos(angle_z)
-    sz = np.sin(angle_z)
+    # 더 역동적으로 보이게 약간 증폭
+    gain = 1.5
+    pitch *= gain
 
-    Rz = np.array(
-        [
-            [cz, -sz, 0.0],
-            [sz,  cz, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=float,
+    # 각도를 너무 크게 만들면 어색하니까 ±90도 정도로 제한
+    max_angle = np.deg2rad(90.0)
+    pitch = np.clip(pitch, -max_angle, max_angle)
+
+    # 이제 (0, pitch, 0) 만 남긴 회전행렬 만들기
+    angles = np.array([0.0, pitch, 0.0], dtype=float)
+
+    R_pitch = rotations.matrix_from_euler(
+        0, 1, 2, angles, extrinsic=False
     )
-    return Rz
+    return R_pitch
+
 
 
 
@@ -323,23 +342,23 @@ def start_retargeting(
 
             # ----- RIGHT WRIST -----
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                # 1) 인간 손목의 상대 회전 (캘리브 기준)
+                # 1) 캘리브 기준 상대 회전
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
 
-                # 2) 여기서 Z축 회전만 남기기
+                # 2) Y축 pitch 성분만 남기기
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
 
-                # 3) 로봇 기본 회전 (URDF 로드 시 예쁘게 정렬된 상태)
+                # 3) 로봇 기본 회전 (URDF 로드 시 예쁜 상태)
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
 
-                # 4) 최종 로봇 회전: "기본 자세"에서 Z축만 도는 상대회전
-                #    (WRIST_VIEW_ROT는 I라고 가정)
+                # 4) 기본 회전에 pitch만 덧붙이기
                 R_robot_R = R_rel_R @ R_robot0_R
 
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
                 new_pose_R = sapien.Pose(base_pos_right, q_robot_R)
                 robot_right.set_pose(new_pose_R)
+
 
 
         # ----------------- LEFT HAND RETARGETING ------------------
@@ -373,6 +392,7 @@ def start_retargeting(
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
                 new_pose_L = sapien.Pose(base_pos_left, q_robot_L)
                 robot_left.set_pose(new_pose_L)
+
 
 
 
