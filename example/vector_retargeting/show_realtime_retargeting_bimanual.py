@@ -44,42 +44,44 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Extract pitch-like wrist movement (rotation around Y-axis only)."""
+    """Use only Z-axis rotation from the relative wrist rotation.
+
+    - 안정적이고 축 안 흐트러지게
+    - 회전 방향은 '인쪽으로 비틀면 로봇도 인쪽' 이 되도록 부호 정리
+    """
     R_rel = np.asarray(R_rel, dtype=float)
 
+    # Sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # Extract yaw-pitch-roll (XYZ) Euler angles
-    # ai, aj, ak = 0, 1, 2 → X, Y, Z axes
-    rx, ry, rz = rotations.euler_from_matrix(
-        R_rel, 0, 1, 2, extrinsic=False
-    )
+    # 살짝 정규화해서 진짜 회전행렬에 가깝게 만들어줌 (숫자 노이즈 방지)
+    U, _, Vt = np.linalg.svd(R_rel)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R[:, -1] *= -1
 
-    # Use only pitch (ry). If direction feels reversed, remove the minus.
-    pitch = -ry
+    # Z축 회전 성분만 추출
+    # 이 각도의 부호를 바꿔서 '인쪽으로 비틀면 로봇도 인쪽'이 되게 조정
+    angle_z = -np.arctan2(R[1, 0], R[0, 0])
 
-    # Filter tiny noise
-    if abs(pitch) < 1e-3:
+    # 아주 작은 노이즈는 무시
+    if abs(angle_z) < 1e-3:
         return np.eye(3)
 
-    # Amplify for dynamic feeling
-    pitch *= 1.5
+    cz = np.cos(angle_z)
+    sz = np.sin(angle_z)
 
-    # Clamp to safe range
-    pitch = float(np.clip(pitch, -np.pi/2, np.pi/2))
-
-    # Build a pure Y-axis rotation matrix manually
-    cy = np.cos(pitch)
-    sy = np.sin(pitch)
-
-    R_pitch = np.array([
-        [ cy, 0.0,  sy],
-        [0.0, 1.0, 0.0],
-        [-sy, 0.0,  cy],
-    ], dtype=float)
-
-    return R_pitch
+    # 순수 Z축 회전 행렬
+    Rz = np.array(
+        [
+            [cz, -sz, 0.0],
+            [sz,  cz, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    return Rz
 
 
 
