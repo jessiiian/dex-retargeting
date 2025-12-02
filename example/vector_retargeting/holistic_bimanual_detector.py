@@ -28,13 +28,12 @@ OPERATOR2MANO_LEFT = np.array(
 class HolisticBimanualDetector:
     """Bimanual detector using MediaPipe Holistic (pose + hands).
 
-    It is designed to be a drop-in replacement for MultiHandDetector:
-    returns a list of dicts, each dict has:
+    Returns a list of dicts, each dict has:
         - "handedness": "Right" or "Left" (operator convention, like before)
         - "joint_pos": (21, 3) np.ndarray in MANO-like frame (centered at wrist)
         - "keypoint_2d": NormalizedLandmarkList for drawing
-        - "wrist_rot": (3, 3) wrist rotation matrix (more stable using pose+hand)
-        - "wrist_pos_world": (3,) np.ndarray, wrist position in world before centering
+        - "wrist_rot": (3, 3) wrist rotation matrix (pose + hand 기반)
+        - "wrist_pos_world": (3,) np.ndarray, 여기서는 정규화된 hand 좌표 기준
     """
 
     def __init__(
@@ -91,7 +90,7 @@ class HolisticBimanualDetector:
                 connection_style[pair] = DrawingSpec(thickness=2)
 
             drawing_utils = mp.solutions.drawing_utils
-            for keypoint_2d in keypoint_2d_list:
+            for keypoint_2d in keypoint_2_list:
                 if keypoint_2d is None:
                     continue
                 drawing_utils.draw_landmarks(
@@ -122,10 +121,11 @@ class HolisticBimanualDetector:
 
         hands = []
 
-        # Right hand
-        if results.right_hand_world_landmarks is not None:
+        # ❗ Holistic에는 right_hand_world_landmarks가 없음
+        # → right_hand_landmarks(정규화)만 있으므로 그걸 3D처럼 사용
+        if results.right_hand_landmarks is not None:
             hand_dict_R = self._build_hand_dict(
-                hand_world=results.right_hand_world_landmarks,
+                hand_world_like=results.right_hand_landmarks,
                 hand_2d=results.right_hand_landmarks,
                 pose_world=pose_world,
                 label="Right",
@@ -133,10 +133,9 @@ class HolisticBimanualDetector:
             if hand_dict_R is not None:
                 hands.append(hand_dict_R)
 
-        # Left hand
-        if results.left_hand_world_landmarks is not None:
+        if results.left_hand_landmarks is not None:
             hand_dict_L = self._build_hand_dict(
-                hand_world=results.left_hand_world_landmarks,
+                hand_world_like=results.left_hand_landmarks,
                 hand_2d=results.left_hand_landmarks,
                 pose_world=pose_world,
                 label="Left",
@@ -150,16 +149,20 @@ class HolisticBimanualDetector:
 
     def _build_hand_dict(
         self,
-        hand_world: formats.landmark_pb2.LandmarkList,
+        hand_world_like: landmark_pb2.NormalizedLandmarkList,
         hand_2d: landmark_pb2.NormalizedLandmarkList,
         pose_world: formats.landmark_pb2.LandmarkList,
         label: str,
     ):
-        """Build per-hand output dict."""
-        if hand_world is None:
+        """Build per-hand output dict.
+
+        hand_world_like: NormalizedLandmarkList (x,y,z in [0,1] range, camera-normalized)
+        """
+        if hand_world_like is None:
             return None
 
-        keypoint_3d_array = self._parse_keypoint_3d(hand_world)  # (21, 3)
+        # x,y,z 읽어서 '월드 비슷한' 좌표계로 사용 (절대 scale은 크게 중요하지 않음)
+        keypoint_3d_array = self._parse_keypoint_3d(hand_world_like)  # (21, 3)
         wrist_pos_world = keypoint_3d_array[0].copy()
 
         # Center at wrist for joint positions
@@ -174,7 +177,7 @@ class HolisticBimanualDetector:
 
         # Handedness mapping (same selfie logic as before)
         if self.selfie:
-            detected_hand_type = label  # camera is mirrored: keep as is
+            detected_hand_type = label
         else:
             inverse_hand_dict = {"Right": "Left", "Left": "Right"}
             detected_hand_type = inverse_hand_dict[label]
@@ -197,8 +200,9 @@ class HolisticBimanualDetector:
 
     @staticmethod
     def _parse_keypoint_3d(
-        keypoint_3d: formats.landmark_pb2.LandmarkList,
+        keypoint_3d: landmark_pb2.NormalizedLandmarkList,
     ) -> np.ndarray:
+        """Use normalized hand landmarks as pseudo-3D points."""
         keypoint = np.empty((21, 3), dtype=np.float32)
         for i in range(21):
             lm = keypoint_3d.landmark[i]
@@ -221,7 +225,7 @@ class HolisticBimanualDetector:
         assert hand_key3d.shape == (21, 3)
         wrist = hand_key3d[HandLandmark.WRIST.value]
 
-        # If pose is missing, fall back to "hand-only" frame (similar to your old code).
+        # If pose is missing, fall back to "hand-only" frame
         if pose_world is None:
             points = hand_key3d[[0, 5, 9], :]
             x_vector = points[0] - points[2]
