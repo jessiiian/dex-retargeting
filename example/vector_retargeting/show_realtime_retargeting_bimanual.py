@@ -341,48 +341,31 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
+
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                # 1) 상대 회전에서 Z축(비틀기)만 추출
+                # 1) 회전: Z축 비틀기 유지
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
                 R_z_R = _simplify_wrist_rotation(R_rel_R)
 
-                # 2) 손목 높이 변화로부터 X축 pitch 각도 계산 (칼을 크게 치켜들기)
-                R_x_R = np.eye(3)
-                if calib_wrist_pos_right[0] is not None and joint_pos_R is not None:
-                    # MediaPipe world coords: y축 방향이 '위/아래'에 해당한다고 가정
-                    # 필요하면 sign만 바꿔서 감각 맞추면 됨.
-                    delta_h = joint_pos_R[0][1] - calib_wrist_pos_right[0][1]  # wrist y difference
-
-                    # gain 조절: 숫자 키우면 더 과장, 줄이면 더 얌전
-                    pitch_gain = 4.0
-                    pitch_angle = float(pitch_gain * delta_h)
-
-                    # 너무 과한 회전은 제한 (±60도 정도)
-                    max_pitch = np.deg2rad(60.0)
-                    pitch_angle = np.clip(pitch_angle, -max_pitch, max_pitch)
-
-                    if abs(pitch_angle) > 1e-3:
-                        cx = np.cos(pitch_angle)
-                        sx = np.sin(pitch_angle)
-                        R_x_R = np.array(
-                            [
-                                [1.0, 0.0,  0.0],
-                                [0.0,  cx, -sx],
-                                [0.0,  sx,  cx],
-                            ],
-                            dtype=float,
-                        )
-
-                # 3) 기본 로봇 회전 가져오기
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
-
-                # 4) 최종 회전: (X축 pitch) → (Z축 twist) → (기본자세)
-                R_robot_R = R_x_R @ R_z_R @ R_robot0_R
-
+                R_robot_R = R_z_R @ R_robot0_R
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                new_pose_R = sapien.Pose(base_pos_right, q_robot_R)
+
+                # 2) 위치: 손목 높이로 z 위치 조절
+                pos_R = base_pos_right.copy()
+                if calib_wrist_pos_right[0] is not None and joint_pos_R is not None:
+                    # MediaPipe world 좌표에서, y가 '위/아래' 축이라고 가정 (필요하면 축 바꿔도 됨)
+                    delta_h = joint_pos_R[0][1] - calib_wrist_pos_right[0][1]
+
+                    # gain: 숫자 키우면 더 크게 들썩, 줄이면 적게
+                    height_gain = 0.3  # 예: 0.3m per 1.0 in normalized height
+
+                    pos_R[2] = base_pos_right[2] + height_gain * delta_h
+
+                new_pose_R = sapien.Pose(pos_R, q_robot_R)
                 robot_right.set_pose(new_pose_R)
+
 
 
 
@@ -410,35 +393,19 @@ def start_retargeting(
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
                 R_z_L = _simplify_wrist_rotation(R_rel_L)
 
-                R_x_L = np.eye(3)
-                if calib_wrist_pos_left[0] is not None and joint_pos_L is not None:
-                    delta_h_L = joint_pos_L[0][1] - calib_wrist_pos_left[0][1]
-                    pitch_gain = 4.0
-                    pitch_angle_L = float(pitch_gain * delta_h_L)
-                    max_pitch = np.deg2rad(60.0)
-                    pitch_angle_L = np.clip(pitch_angle_L, -max_pitch, max_pitch)
-
-                    if abs(pitch_angle_L) > 1e-3:
-                        cx = np.cos(pitch_angle_L)
-                        sx = np.sin(pitch_angle_L)
-                        R_x_L = np.array(
-                            [
-                                [1.0, 0.0,  0.0],
-                                [0.0,  cx, -sx],
-                                [0.0,  sx,  cx],
-                            ],
-                            dtype=float,
-                        )
-
                 base_T_L = base_pose_left.to_transformation_matrix()
                 R_robot0_L = base_T_L[:3, :3]
-
-                R_robot_L = R_x_L @ R_z_L @ R_robot0_L
+                R_robot_L = R_z_L @ R_robot0_L
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
-                new_pose_L = sapien.Pose(base_pos_left, q_robot_L)
+
+                pos_L = base_pos_left.copy()
+                if calib_wrist_pos_left[0] is not None and joint_pos_L is not None:
+                    delta_h_L = joint_pos_L[0][1] - calib_wrist_pos_left[0][1]
+                    height_gain = 0.3
+                    pos_L[2] = base_pos_left[2] + height_gain * delta_h_L
+
+                new_pose_L = sapien.Pose(pos_L, q_robot_L)
                 robot_left.set_pose(new_pose_L)
-
-
 
 
 
