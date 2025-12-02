@@ -43,52 +43,43 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
-
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Keep only pitch-like rotation (around Y) from the relative wrist rotation.
-
-    - Input : 3x3 relative rotation matrix R_rel (wrist_R @ calib_wrist_R.T)
-    - Output: 3x3 rotation that rotates only around Y axis
-              → '손목을 위아래로' 움직이는 느낌에 대응
-    """
+    """Extract pitch-like wrist movement (rotation around Y-axis only)."""
     R_rel = np.asarray(R_rel, dtype=float)
 
-    # Sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # Decompose relative rotation into Euler angles
-    # ai, aj, ak = 0, 1, 2 → X, Y, Z
+    # Extract yaw-pitch-roll (XYZ) Euler angles
+    # ai, aj, ak = 0, 1, 2 → X, Y, Z axes
     rx, ry, rz = rotations.euler_from_matrix(
         R_rel, 0, 1, 2, extrinsic=False
     )
 
-    # Use only Y-axis component as "pitch" (위/아래 들썩임)
-    # 부호는 상황에 따라 반대로 느껴질 수 있어서 일단 -ry로 두고,
-    # 필요하면 여기 ry로 바꾸면 됨.
+    # Use only pitch (ry). If direction feels reversed, remove the minus.
     pitch = -ry
 
-    # 너무 작은 노이즈는 무시
+    # Filter tiny noise
     if abs(pitch) < 1e-3:
         return np.eye(3)
 
-    # 더 역동적으로 보이게 약간 증폭
-    gain = 1.5
-    pitch *= gain
+    # Amplify for dynamic feeling
+    pitch *= 1.5
 
-    # 각도를 너무 크게 만들면 어색하니까 ±90도 정도로 제한
-    max_angle = np.deg2rad(90.0)
-    pitch = np.clip(pitch, -max_angle, max_angle)
+    # Clamp to safe range
+    pitch = float(np.clip(pitch, -np.pi/2, np.pi/2))
 
-    # 이제 (0, pitch, 0) 만 남긴 회전행렬 만들기
-    angles = np.array([0.0, pitch, 0.0], dtype=float)
+    # Build a pure Y-axis rotation matrix manually
+    cy = np.cos(pitch)
+    sy = np.sin(pitch)
 
-    R_pitch = rotations.matrix_from_euler(
-        0, 1, 2, angles, extrinsic=False
-    )
+    R_pitch = np.array([
+        [ cy, 0.0,  sy],
+        [0.0, 1.0, 0.0],
+        [-sy, 0.0,  cy],
+    ], dtype=float)
+
     return R_pitch
-
-
 
 
 
