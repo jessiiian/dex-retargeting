@@ -296,17 +296,19 @@ def start_retargeting(
         joint_pos_L = None
         wrist_rot_R_raw = None
         wrist_rot_L_raw = None
+        keypoint_2d_R = None
+        keypoint_2d_L = None
 
         for h in hands:
             handedness = h["handedness"]  # "Right" or "Left"
             if handedness == "Right":
                 joint_pos_R = h["joint_pos"]
                 wrist_rot_R_raw = h["wrist_rot"]
-                wrist_pos_R = h["wrist_pos_world"]
+                keypoint_2d_R = h["keypoint_2d"]
             elif handedness == "Left":
                 joint_pos_L = h["joint_pos"]
                 wrist_rot_L_raw = h["wrist_rot"]
-                wrist_pos_L = h["wrist_pos_world"]
+                keypoint_2d_L = h["keypoint_2d"]
 
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
@@ -340,48 +342,30 @@ def start_retargeting(
             break
 
 
-        # --- 1) 기본값: 아직 캘리브 안 됐거나, 손 하나만 보이는 경우 ---
-        gap = gap_state[0]          # 이전 프레임에서의 gap 상태
-        gap_right = gap / 2.0
-        gap_left = -gap / 2.0
+        # --- 손의 2D 위치를 이용해 로봇 손 좌우 위치 결정 ---
 
-        # --- 2) 두 손 다 있고, 캘리브 거리도 있는 경우에만 업데이트 ---
-        if (
-            calib_hand_dist[0] is not None
-            and wrist_pos_R is not None
-            and wrist_pos_L is not None
-        ):
-            cur_dist = float(np.linalg.norm(wrist_pos_R - wrist_pos_L))
+        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 그대로 고정
+        base_z = base_z  # 너가 이미 쓰는 높이 값 재사용 (예: -0.13)
 
-            eps = 1e-4
-            if calib_hand_dist[0] > eps:
-                # ✅ ratio_raw: "캘리브 거리 / 현재 거리"
-                #   → 손이 더 가까워질수록 ratio_raw > 1
-                ratio_raw = calib_hand_dist[0] / max(cur_dist, eps)
-            else:
-                ratio_raw = 1.0
+        # 화면 기준 최대 좌우 이동 범위 (미터)
+        max_side = 0.25  # 0.25m = 25cm 왼/오른쪽으로
 
-            # 너무 과하게 안 가도록 제한 (조절 가능)
-            ratio = float(np.clip(ratio_raw, 0.7, 1.3))
-            #  - cur_dist < calib → ratio > 1  → gap 줄어듦
-            #  - cur_dist > calib → ratio < 1  → gap 늘어남
+        # 기본 위치 (손 안 보일 때)
+        y_R = +0.12
+        y_L = -0.12
 
-            # ✅ 손이 가까워질수록 gap을 줄이기 위해 "나눔" 사용
-            target_gap = base_gap / ratio
+        if keypoint_2d_R is not None:
+            u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
+            # 0.0 → -max_side (왼쪽 끝), 0.5 → 0, 1.0 → +max_side (오른쪽 끝)
+            y_R = (u_R - 0.5) * 2.0 * max_side
 
-            # --- low-pass filter: 천천히 target_gap 쪽으로 움직임 ---
-            alpha = 0.15  # 0.1~0.2 정도가 부드럽고 자연스러움
-            gap = (1.0 - alpha) * gap_state[0] + alpha * target_gap
+        if keypoint_2d_L is not None:
+            u_L = keypoint_2d_L.landmark[0].x  # 0 ~ 1
+            y_L = (u_L - 0.5) * 2.0 * max_side
 
-            # 상태 업데이트
-            gap_state[0] = gap
-            gap_right = gap / 2.0
-            gap_left = -gap / 2.0
+        base_pos_right = np.array([base_x, y_R, base_z], dtype=float)
+        base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
 
-        # --- 3) 이 gap으로 실제 베이스 위치 업데이트 ---
-        base_x = 0.0  # 이전에 썼던 x 위치 (앞/뒤)
-        base_pos_right = np.array([base_x,  gap_right, base_z], dtype=float)
-        base_pos_left  = np.array([base_x,  gap_left,  base_z], dtype=float)
 
 
 
