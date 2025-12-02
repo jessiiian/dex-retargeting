@@ -193,6 +193,10 @@ def start_retargeting(
     retargeting_right = cfg_right.build()
     retargeting_left = cfg_left.build()
 
+    calib_hand_dist = [None]
+    base_gap = 0.24  # robot hands default distance (tune as you like)
+    base_z = -0.13   # your current ground offset for hands
+
     # Single detector that returns both hands
     detector = MultiHandDetector(selfie=False)
 
@@ -296,9 +300,11 @@ def start_retargeting(
             if handedness == "Right":
                 joint_pos_R = h["joint_pos"]
                 wrist_rot_R_raw = h["wrist_rot"]
+                wrist_pos_R = h["wrist_pos_world"]
             elif handedness == "Left":
                 joint_pos_L = h["joint_pos"]
                 wrist_rot_L_raw = h["wrist_rot"]
+                wrist_pos_L = h["wrist_pos_world"]
 
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
@@ -318,10 +324,47 @@ def start_retargeting(
                 calib_wrist_pos_left[0] = joint_pos_L[0].copy()
                 logger.info("Left wrist orientation calibrated (auto after 5s).")
 
+            if (calib_hand_dist[0] is None
+                    and wrist_pos_R is not None
+                    and wrist_pos_L is not None):
+                calib_hand_dist[0] = float(
+                    np.linalg.norm(wrist_pos_R - wrist_pos_L)
+                )
+                logger.info(f"Calibrated hand distance: {calib_hand_dist[0]:.4f}")
+
         # Keyboard controls: only 'q' to quit
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
+
+
+        # Default: symmetric placement if we don't know distance yet
+        gap = base_gap
+        gap_right = +gap / 2.0
+        gap_left = -gap / 2.0
+
+        if (
+            calib_hand_dist[0] is not None
+            and wrist_pos_R is not None
+            and wrist_pos_L is not None
+        ):
+            cur_dist = float(np.linalg.norm(wrist_pos_R - wrist_pos_L))
+
+            if calib_hand_dist[0] > 1e-4:
+                scale = cur_dist / calib_hand_dist[0]
+            else:
+                scale = 1.0
+
+            # Avoid crazy values
+            scale = float(np.clip(scale, 0.5, 2.0))
+
+            gap = base_gap * scale
+            gap_right = +gap / 2.0
+            gap_left = -gap / 2.0
+
+        # Now set per-frame base positions
+        base_pos_right = np.array([gap_right, 0.0, base_z], dtype=float)
+        base_pos_left  = np.array([gap_left,  0.0, base_z], dtype=float)
 
         # ----------------- RIGHT HAND RETARGETING -----------------
         if joint_pos_R is not None:
