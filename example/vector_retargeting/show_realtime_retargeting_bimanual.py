@@ -44,80 +44,24 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Project wrist rotation to a single axis and handle degenerate cases safely.
-
-    - If R_rel is not a valid rotation (NaNs, wrong shape, etc.), return identity.
-    - Otherwise, convert to axis-angle, project onto chosen axis (X),
-      and rebuild a proper 3x3 rotation matrix.
-    """
+    """Currently no simplification: use full wrist rotation as-is."""
     R_rel = np.asarray(R_rel, dtype=float)
-
-    # Basic sanity checks
-    if R_rel.shape != (3, 3):
+    if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
-    if not np.all(np.isfinite(R_rel)):
-        return np.eye(3)
-
-    # Orthogonalize R_rel to make it a proper rotation matrix (numerical safety)
-    U, _, Vt = np.linalg.svd(R_rel)
-    R_ortho = U @ Vt
-    # Ensure determinant is +1 (proper rotation)
-    if np.linalg.det(R_ortho) < 0:
-        R_ortho[:, -1] *= -1
-
-    # Now convert to axis-angle
-    try:
-        aa = rotations.axis_angle_from_matrix(R_ortho)  # [ax, ay, az, theta]
-    except Exception:
-        # Any failure → no rotation
-        return np.eye(3)
-
-    if not np.all(np.isfinite(aa)):
-        return np.eye(3)
-
-    axis = aa[:3]
-    theta = float(aa[3])
-
-    axis_norm = np.linalg.norm(axis)
-    if axis_norm < 1e-6 or abs(theta) < 1e-6:
-        # Very small rotation → treat as no rotation
-        return np.eye(3)
-
-    axis = axis / axis_norm
-
-    # Choose dominant axis for wrist motion (X-axis)
-    chosen_axis = np.array([1.0, 0.0, 0.0], dtype=float)
-    chosen_axis /= np.linalg.norm(chosen_axis)
-
-    # Rotation vector = axis * angle
-    rot_vec = axis * theta  # (3,)
-    angle_proj = float(np.dot(rot_vec, chosen_axis))
-
-    if not np.isfinite(angle_proj):
-        return np.eye(3)
-
-    # Projected axis-angle: chosen_axis with projected angle
-    axis_angle_proj = np.array(
-        [chosen_axis[0], chosen_axis[1], chosen_axis[2], angle_proj],
-        dtype=float,
-    )
-
-    R_simplified = rotations.matrix_from_axis_angle(axis_angle_proj)
-    if not (np.all(np.isfinite(R_simplified)) and R_simplified.shape == (3, 3)):
-        return np.eye(3)
-
-    return R_simplified
+    return R_rel
 
 
-# View correction for mapping camera(hand) frame → robot frame.
-# This is the tilt that you experimentally found to look good:
-# axis = [1, 0, 1], angle = -90 deg
 R_tilt = rotations.matrix_from_axis_angle(
     np.array([1.0, 0.0, 1.0, -np.pi / 2.0])
 )
 
-# Final view rotation (shared by both hands for now)
-WRIST_VIEW_ROT = R_tilt
+# 추가 보정: z축 기준 -45도 돌려서 오른쪽 위 대각 → 정가운데 위쪽으로 맞추기
+R_center = rotations.matrix_from_axis_angle(
+    np.array([0.0, 0.0, 1.0, -np.pi / 4.0])
+)
+
+# 최종 뷰 회전
+WRIST_VIEW_ROT = R_center @ R_tilt
 
 
 # ---------------------------------------------------------------------------
