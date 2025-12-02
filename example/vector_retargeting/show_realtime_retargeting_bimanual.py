@@ -43,33 +43,23 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
-import numpy as np
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Keep only rotation around Z axis (in the relative rotation).
-
-    - Input:  3x3 relative rotation matrix R_rel
-    - Output: 3x3 rotation matrix that rotates only about Z.
-    """
+    """Keep only rotation around Z axis (with inverted direction to match operator)."""
     R_rel = np.asarray(R_rel, dtype=float)
 
-    # Basic sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # Extract yaw-like angle around Z from the rotation matrix.
-    # This is the usual formula for yaw in many conventions:
-    # yaw ≈ atan2(R[1,0], R[0,0])
-    angle_z = np.arctan2(R_rel[1, 0], R_rel[0, 0])
+    # Invert sign so that human "inward" twist → robot "inward" twist
+    angle_z = -np.arctan2(R_rel[1, 0], R_rel[0, 0])
 
-    # Optionally, small-angle noise 제거
     if abs(angle_z) < 1e-4:
         return np.eye(3)
 
     cz = np.cos(angle_z)
     sz = np.sin(angle_z)
 
-    # Pure Z-axis rotation
     Rz = np.array(
         [
             [cz, -sz, 0.0],
@@ -79,6 +69,7 @@ def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
         dtype=float,
     )
     return Rz
+
 
 
 
