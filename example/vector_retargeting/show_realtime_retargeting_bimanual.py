@@ -43,12 +43,43 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
+import numpy as np
+
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Currently no simplification: use full wrist rotation as-is."""
+    """Keep only rotation around Z axis (in the relative rotation).
+
+    - Input:  3x3 relative rotation matrix R_rel
+    - Output: 3x3 rotation matrix that rotates only about Z.
+    """
     R_rel = np.asarray(R_rel, dtype=float)
+
+    # Basic sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
-    return R_rel
+
+    # Extract yaw-like angle around Z from the rotation matrix.
+    # This is the usual formula for yaw in many conventions:
+    # yaw ≈ atan2(R[1,0], R[0,0])
+    angle_z = np.arctan2(R_rel[1, 0], R_rel[0, 0])
+
+    # Optionally, small-angle noise 제거
+    if abs(angle_z) < 1e-4:
+        return np.eye(3)
+
+    cz = np.cos(angle_z)
+    sz = np.sin(angle_z)
+
+    # Pure Z-axis rotation
+    Rz = np.array(
+        [
+            [cz, -sz, 0.0],
+            [sz,  cz, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    return Rz
+
 
 
 # No extra view correction: use robot's initial orientation as-is
@@ -299,19 +330,20 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
+            # ----- RIGHT WRIST -----
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                # Relative wrist rotation (human) w.r.t calibration pose
+                # 1) 인간 손목의 상대 회전 (캘리브 기준)
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
 
-                # (원하면 여기서는 그냥 통과)
+                # 2) 여기서 Z축 회전만 남기기
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
 
-                # Robot's initial base rotation (the "pretty" default orientation)
+                # 3) 로봇 기본 회전 (URDF 로드 시 예쁘게 정렬된 상태)
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
 
-                # New robot base rotation: "default" ∘ "relative wrist rotation"
-                # (R_rel_R 가 I면 R_robot_R = R_robot0_R 그대로)
+                # 4) 최종 로봇 회전: "기본 자세"에서 Z축만 도는 상대회전
+                #    (WRIST_VIEW_ROT는 I라고 가정)
                 R_robot_R = R_rel_R @ R_robot0_R
 
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
@@ -337,6 +369,7 @@ def start_retargeting(
             qpos_L = retargeting_left.retarget(ref_value_L)
             robot_left.set_qpos(qpos_L[retargeting_to_sapien_L])
 
+            # ----- LEFT WRIST -----
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
                 R_rel_L = _simplify_wrist_rotation(R_rel_L)
@@ -349,6 +382,7 @@ def start_retargeting(
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
                 new_pose_L = sapien.Pose(base_pos_left, q_robot_L)
                 robot_left.set_pose(new_pose_L)
+
 
 
         # Render a few times for smoother display
