@@ -340,7 +340,6 @@ def start_retargeting(
             break
 
 
-        # Default: symmetric placement if we don't know distance yet
         # --- 1) 기본값: 아직 캘리브 안 됐거나, 손 하나만 보이는 경우 ---
         gap = gap_state[0]          # 이전 프레임에서의 gap 상태
         gap_right = gap / 2.0
@@ -354,16 +353,21 @@ def start_retargeting(
         ):
             cur_dist = float(np.linalg.norm(wrist_pos_R - wrist_pos_L))
 
-            if calib_hand_dist[0] > 1e-4:
-                ratio = cur_dist / calib_hand_dist[0]
+            eps = 1e-4
+            if calib_hand_dist[0] > eps:
+                # ✅ ratio_raw: "캘리브 거리 / 현재 거리"
+                #   → 손이 더 가까워질수록 ratio_raw > 1
+                ratio_raw = calib_hand_dist[0] / max(cur_dist, eps)
             else:
-                ratio = 1.0
+                ratio_raw = 1.0
 
-            # 너무 과하게 좁아지거나 벌어지지 않도록 비율 제한
-            ratio = float(np.clip(ratio, 0.7, 1.3))  # 70% ~ 130%
+            # 너무 과하게 안 가도록 제한 (조절 가능)
+            ratio = float(np.clip(ratio_raw, 0.7, 1.3))
+            #  - cur_dist < calib → ratio > 1  → gap 줄어듦
+            #  - cur_dist > calib → ratio < 1  → gap 늘어남
 
-            # 이 비율을 base_gap에 매핑한 목표 gap
-            target_gap = base_gap * ratio
+            # ✅ 손이 가까워질수록 gap을 줄이기 위해 "나눔" 사용
+            target_gap = base_gap / ratio
 
             # --- low-pass filter: 천천히 target_gap 쪽으로 움직임 ---
             alpha = 0.15  # 0.1~0.2 정도가 부드럽고 자연스러움
