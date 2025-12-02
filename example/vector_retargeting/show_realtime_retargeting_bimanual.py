@@ -44,25 +44,33 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Project wrist rotation to a single axis (X) to avoid diagonal flipping.
+    """Project wrist rotation to a single axis to avoid diagonal flipping.
 
-    We use rotation vector form (axis * angle), then keep only the component
-    along a chosen axis, here X-axis = [1, 0, 0].
+    We convert the relative rotation to axis-angle, then keep only the
+    component along a chosen axis (here X-axis) and rebuild a 3x3 matrix.
     """
-    # Choose a dominant axis for wrist flexion
-    axis = np.array([1.0, 0.0, 0.0])  # X axis; change to [0,1,0] or [0,0,1] if needed
+    # Choose dominant axis for wrist flexion/extension (X axis by default)
+    chosen_axis = np.array([1.0, 0.0, 0.0], dtype=float)
 
-    # Convert relative rotation to rotation vector (axis * angle)
-    rot_vec = rotations.vector_from_rotation_matrix(R_rel)  # shape (3,)
+    # Get axis-angle from rotation matrix: [ax, ay, az, theta]
+    aa = rotations.axis_angle_from_matrix(R_rel)  # shape (4,)
+    axis = aa[:3]          # unit axis
+    theta = float(aa[3])   # angle in radians
 
-    # Project rotation vector onto chosen axis
-    angle_proj = float(np.dot(rot_vec, axis))  # scalar
+    # Rotation vector = axis * angle  (compact axis-angle)
+    rot_vec = axis * theta  # shape (3,)
 
-    # Build axis-angle: [ax, ay, az, angle]
-    axis_angle = np.array([axis[0], axis[1], axis[2], angle_proj], dtype=float)
+    # Project this rotation vector onto the chosen axis
+    angle_proj = float(np.dot(rot_vec, chosen_axis))  # scalar
+
+    # Build projected axis-angle: same axis, projected angle
+    axis_angle_proj = np.array(
+        [chosen_axis[0], chosen_axis[1], chosen_axis[2], angle_proj],
+        dtype=float,
+    )
 
     # Back to rotation matrix
-    R_simplified = rotations.matrix_from_axis_angle(axis_angle)
+    R_simplified = rotations.matrix_from_axis_angle(axis_angle_proj)
     return R_simplified
 
 
