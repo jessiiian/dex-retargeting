@@ -247,6 +247,9 @@ def start_retargeting(
     calib_wrist_R_right = [None]
     calib_wrist_R_left = [None]
 
+    calib_wrist_pos_right = [None]  # 3D wrist position at calibration (Right)
+    calib_wrist_pos_left = [None]   # 3D wrist position at calibration (Left)
+
     # When did we start? (for 5s auto-calibration)
     start_time = time.time()
     calibration_delay = 5.0  # seconds
@@ -303,11 +306,16 @@ def start_retargeting(
         # 5s auto-calibration: after delay, use current wrist pose as reference
         elapsed = time.time() - start_time
         if elapsed >= calibration_delay:
-            if calib_wrist_R_right[0] is None and wrist_R_R is not None:
+            # Right hand
+            if calib_wrist_R_right[0] is None and wrist_R_R is not None and joint_pos_R is not None:
                 calib_wrist_R_right[0] = wrist_R_R.copy()
+                calib_wrist_pos_right[0] = joint_pos_R[0].copy()  # index 0 = wrist
                 logger.info("Right wrist orientation calibrated (auto after 5s).")
-            if calib_wrist_R_left[0] is None and wrist_R_L is not None:
+
+            # Left hand
+            if calib_wrist_R_left[0] is None and wrist_R_L is not None and joint_pos_L is not None:
                 calib_wrist_R_left[0] = wrist_R_L.copy()
+                calib_wrist_pos_left[0] = joint_pos_L[0].copy()
                 logger.info("Left wrist orientation calibrated (auto after 5s).")
 
         # Keyboard controls: only 'q' to quit
@@ -333,24 +341,49 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
-            # ----- RIGHT WRIST -----
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                # 1) 캘리브 기준 상대 회전
+                # 1) 상대 회전에서 Z축(비틀기)만 추출
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+                R_z_R = _simplify_wrist_rotation(R_rel_R)
 
-                # 2) Y축 pitch 성분만 남기기
-                R_rel_R = _simplify_wrist_rotation(R_rel_R)
+                # 2) 손목 높이 변화로부터 X축 pitch 각도 계산 (칼을 크게 치켜들기)
+                R_x_R = np.eye(3)
+                if calib_wrist_pos_right[0] is not None and joint_pos_R is not None:
+                    # MediaPipe world coords: y축 방향이 '위/아래'에 해당한다고 가정
+                    # 필요하면 sign만 바꿔서 감각 맞추면 됨.
+                    delta_h = joint_pos_R[0][1] - calib_wrist_pos_right[0][1]  # wrist y difference
 
-                # 3) 로봇 기본 회전 (URDF 로드 시 예쁜 상태)
+                    # gain 조절: 숫자 키우면 더 과장, 줄이면 더 얌전
+                    pitch_gain = 4.0
+                    pitch_angle = float(pitch_gain * delta_h)
+
+                    # 너무 과한 회전은 제한 (±60도 정도)
+                    max_pitch = np.deg2rad(60.0)
+                    pitch_angle = np.clip(pitch_angle, -max_pitch, max_pitch)
+
+                    if abs(pitch_angle) > 1e-3:
+                        cx = np.cos(pitch_angle)
+                        sx = np.sin(pitch_angle)
+                        R_x_R = np.array(
+                            [
+                                [1.0, 0.0,  0.0],
+                                [0.0,  cx, -sx],
+                                [0.0,  sx,  cx],
+                            ],
+                            dtype=float,
+                        )
+
+                # 3) 기본 로봇 회전 가져오기
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
 
-                # 4) 기본 회전에 pitch만 덧붙이기
-                R_robot_R = R_rel_R @ R_robot0_R
+                # 4) 최종 회전: (X축 pitch) → (Z축 twist) → (기본자세)
+                R_robot_R = R_x_R @ R_z_R @ R_robot0_R
 
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
                 new_pose_R = sapien.Pose(base_pos_right, q_robot_R)
                 robot_right.set_pose(new_pose_R)
+
 
 
 
@@ -375,16 +408,36 @@ def start_retargeting(
             # ----- LEFT WRIST -----
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
-                R_rel_L = _simplify_wrist_rotation(R_rel_L)
+                R_z_L = _simplify_wrist_rotation(R_rel_L)
+
+                R_x_L = np.eye(3)
+                if calib_wrist_pos_left[0] is not None and joint_pos_L is not None:
+                    delta_h_L = joint_pos_L[0][1] - calib_wrist_pos_left[0][1]
+                    pitch_gain = 4.0
+                    pitch_angle_L = float(pitch_gain * delta_h_L)
+                    max_pitch = np.deg2rad(60.0)
+                    pitch_angle_L = np.clip(pitch_angle_L, -max_pitch, max_pitch)
+
+                    if abs(pitch_angle_L) > 1e-3:
+                        cx = np.cos(pitch_angle_L)
+                        sx = np.sin(pitch_angle_L)
+                        R_x_L = np.array(
+                            [
+                                [1.0, 0.0,  0.0],
+                                [0.0,  cx, -sx],
+                                [0.0,  sx,  cx],
+                            ],
+                            dtype=float,
+                        )
 
                 base_T_L = base_pose_left.to_transformation_matrix()
                 R_robot0_L = base_T_L[:3, :3]
 
-                R_robot_L = R_rel_L @ R_robot0_L
-
+                R_robot_L = R_x_L @ R_z_L @ R_robot0_L
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
                 new_pose_L = sapien.Pose(base_pos_left, q_robot_L)
                 robot_left.set_pose(new_pose_L)
+
 
 
 
