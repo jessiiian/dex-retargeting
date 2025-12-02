@@ -44,33 +44,68 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Project wrist rotation to a single axis to avoid diagonal flipping.
+    """Project wrist rotation to a single axis and handle degenerate cases safely.
 
-    We convert the relative rotation to axis-angle, then keep only the
-    component along a chosen axis (here X-axis) and rebuild a 3x3 matrix.
+    - If R_rel is not a valid rotation (NaNs, wrong shape, etc.), return identity.
+    - Otherwise, convert to axis-angle, project onto chosen axis (X),
+      and rebuild a proper 3x3 rotation matrix.
     """
-    # Choose dominant axis for wrist flexion/extension (X axis by default)
+    R_rel = np.asarray(R_rel, dtype=float)
+
+    # Basic sanity checks
+    if R_rel.shape != (3, 3):
+        return np.eye(3)
+    if not np.all(np.isfinite(R_rel)):
+        return np.eye(3)
+
+    # Orthogonalize R_rel to make it a proper rotation matrix (numerical safety)
+    U, _, Vt = np.linalg.svd(R_rel)
+    R_ortho = U @ Vt
+    # Ensure determinant is +1 (proper rotation)
+    if np.linalg.det(R_ortho) < 0:
+        R_ortho[:, -1] *= -1
+
+    # Now convert to axis-angle
+    try:
+        aa = rotations.axis_angle_from_matrix(R_ortho)  # [ax, ay, az, theta]
+    except Exception:
+        # Any failure → no rotation
+        return np.eye(3)
+
+    if not np.all(np.isfinite(aa)):
+        return np.eye(3)
+
+    axis = aa[:3]
+    theta = float(aa[3])
+
+    axis_norm = np.linalg.norm(axis)
+    if axis_norm < 1e-6 or abs(theta) < 1e-6:
+        # Very small rotation → treat as no rotation
+        return np.eye(3)
+
+    axis = axis / axis_norm
+
+    # Choose dominant axis for wrist motion (X-axis)
     chosen_axis = np.array([1.0, 0.0, 0.0], dtype=float)
+    chosen_axis /= np.linalg.norm(chosen_axis)
 
-    # Get axis-angle from rotation matrix: [ax, ay, az, theta]
-    aa = rotations.axis_angle_from_matrix(R_rel)  # shape (4,)
-    axis = aa[:3]          # unit axis
-    theta = float(aa[3])   # angle in radians
+    # Rotation vector = axis * angle
+    rot_vec = axis * theta  # (3,)
+    angle_proj = float(np.dot(rot_vec, chosen_axis))
 
-    # Rotation vector = axis * angle  (compact axis-angle)
-    rot_vec = axis * theta  # shape (3,)
+    if not np.isfinite(angle_proj):
+        return np.eye(3)
 
-    # Project this rotation vector onto the chosen axis
-    angle_proj = float(np.dot(rot_vec, chosen_axis))  # scalar
-
-    # Build projected axis-angle: same axis, projected angle
+    # Projected axis-angle: chosen_axis with projected angle
     axis_angle_proj = np.array(
         [chosen_axis[0], chosen_axis[1], chosen_axis[2], angle_proj],
         dtype=float,
     )
 
-    # Back to rotation matrix
     R_simplified = rotations.matrix_from_axis_angle(axis_angle_proj)
+    if not (np.all(np.isfinite(R_simplified)) and R_simplified.shape == (3, 3)):
+        return np.eye(3)
+
     return R_simplified
 
 
