@@ -328,14 +328,6 @@ def start_retargeting(
                 calib_wrist_pos_left[0] = joint_pos_L[0].copy()
                 logger.info("Left wrist orientation calibrated (auto after 5s).")
 
-            if (calib_hand_dist[0] is None
-                    and wrist_pos_R is not None
-                    and wrist_pos_L is not None):
-                calib_hand_dist[0] = float(
-                    np.linalg.norm(wrist_pos_R - wrist_pos_L)
-                )
-                logger.info(f"Calibrated hand distance: {calib_hand_dist[0]:.4f}")
-
         # Keyboard controls: only 'q' to quit
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
