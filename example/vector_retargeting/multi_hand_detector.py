@@ -129,9 +129,10 @@ class MultiHandDetector:
         Returns:
             hands: list of dict, each dict has:
                 - "handedness": "Right" or "Left" (operator-hand convention)
-                - "joint_pos": (21, 3) np.ndarray in MANO-like frame
+                - "joint_pos": (21, 3) np.ndarray in MANO-like frame (centered at wrist)
                 - "keypoint_2d": NormalizedLandmarkList for drawing
                 - "wrist_rot": (3, 3) rotation matrix in MediaPipe wrist frame
+                - "wrist_pos_world": (3,) np.ndarray, wrist position BEFORE centering
         """
         results = self.hand_detector.process(rgb)
         if not results.multi_hand_landmarks:
@@ -155,11 +156,18 @@ class MultiHandDetector:
             keypoint_3d = results.multi_hand_world_landmarks[i]
             keypoint_2d = results.multi_hand_landmarks[i]
 
+            # 3D points in world/camera coordinates
             keypoint_3d_array = self.parse_keypoint_3d(keypoint_3d)
-            # Make wrist the origin
-            keypoint_3d_array = keypoint_3d_array - keypoint_3d_array[0:1, :]
 
-            mediapipe_wrist_rot = self.estimate_frame_from_hand_points(keypoint_3d_array)
+            # Save wrist position BEFORE centering
+            wrist_pos_world = keypoint_3d_array[0].copy()
+
+            # Make wrist the origin for joint positions
+            keypoint_3d_centered = keypoint_3d_array - keypoint_3d_array[0:1, :]
+
+            mediapipe_wrist_rot = self.estimate_frame_from_hand_points(
+                keypoint_3d_centered
+            )
 
             # Choose OPERATOR2MANO based on detected hand type
             if detected_hand_type == "Right":
@@ -167,7 +175,7 @@ class MultiHandDetector:
             else:
                 operator2mano = OPERATOR2MANO_LEFT
 
-            joint_pos = keypoint_3d_array @ mediapipe_wrist_rot @ operator2mano
+            joint_pos = keypoint_3d_centered @ mediapipe_wrist_rot @ operator2mano
 
             hands.append(
                 {
@@ -175,6 +183,7 @@ class MultiHandDetector:
                     "joint_pos": joint_pos,
                     "keypoint_2d": keypoint_2d,
                     "wrist_rot": mediapipe_wrist_rot,
+                    "wrist_pos_world": wrist_pos_world,
                 }
             )
 
