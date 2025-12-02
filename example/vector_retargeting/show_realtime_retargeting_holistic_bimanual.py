@@ -16,7 +16,7 @@ from pytransform3d import rotations  # For rotation matrix/quaternion conversion
 from dex_retargeting.constants import (
     RobotName,
     RetargetingType,
-    HandType,
+    HandType,              # kept for CLI compatibility
     get_default_config_path,
 )
 from dex_retargeting.retargeting_config import RetargetingConfig
@@ -31,7 +31,7 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     """Convert wrist_rot to a 3x3 rotation matrix.
     - If 3x3: use directly
     - If length 4: treat as quaternion (w, x, y, z)
-    - If None or other shape: ignore
+    - If None or other shape: return None
     """
     if wrist_rot is None:
         return None
@@ -44,35 +44,33 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Use only Z-axis rotation from the relative wrist rotation.
+    """Keep only the Z-axis rotation from the relative wrist rotation.
 
-    - 안정적이고 축 안 흐트러지게
-    - 회전 방향은 '인쪽으로 비틀면 로봇도 인쪽' 이 되도록 부호 정리
+    This avoids axis drift and keeps rotation intuitive:
+    - Twist inward on your wrist → robot hand also twists inward.
     """
     R_rel = np.asarray(R_rel, dtype=float)
 
-    # Sanity check
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # 살짝 정규화해서 진짜 회전행렬에 가깝게 만들어줌 (숫자 노이즈 방지)
+    # Project R_rel onto the closest valid rotation (orthonormal) to remove noise
     U, _, Vt = np.linalg.svd(R_rel)
     R = U @ Vt
     if np.linalg.det(R) < 0:
         R[:, -1] *= -1
 
-    # Z축 회전 성분만 추출
-    # 이 각도의 부호를 바꿔서 '인쪽으로 비틀면 로봇도 인쪽'이 되게 조정
+    # Extract Z rotation
+    # Note the minus sign to make "inward twist" consistent with robot motion
     angle_z = -np.arctan2(R[1, 0], R[0, 0])
 
-    # 아주 작은 노이즈는 무시
+    # Ignore tiny jitter
     if abs(angle_z) < 1e-3:
         return np.eye(3)
 
     cz = np.cos(angle_z)
     sz = np.sin(angle_z)
 
-    # 순수 Z축 회전 행렬
     Rz = np.array(
         [
             [cz, -sz, 0.0],
@@ -84,11 +82,6 @@ def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
     return Rz
 
 
-
-# No extra view correction: use robot's initial orientation as-is
-WRIST_VIEW_ROT = np.eye(3)
-
-
 # ---------------------------------------------------------------------------
 # Robot loading helper
 # ---------------------------------------------------------------------------
@@ -98,18 +91,23 @@ def _load_robot_for_config(
     urdf_path: str,
     xy_offset: np.ndarray,
 ):
-    """Load a robot from URDF, apply scaling and position offset.
+    """Load one robot hand from URDF, with scaling and initial pose offset.
+
+    Args:
+        scene: SAPIEN scene
+        urdf_path: path to URDF file
+        xy_offset: np.array([dx, dy, dz]) for initial base translation
 
     Returns:
-        robot: the loaded SAPIEN robot
-        base_pose: its initial base pose (used as reference for wrist rotation)
+        robot: loaded SAPIEN articulation
+        base_pose: initial base pose (used as reference for wrist rotation)
     """
     loader = scene.create_urdf_loader()
     filepath = Path(urdf_path)
     robot_name = filepath.stem
     loader.load_multiple_collisions_from_file = True
 
-    # Scaling rules depending on robot type
+    # Heuristic scaling per robot type
     if "ability" in robot_name:
         loader.scale = 1.5
     elif "dclaw" in robot_name:
@@ -125,7 +123,7 @@ def _load_robot_for_config(
     elif "svh" in robot_name:
         loader.scale = 1.5
 
-    # Load GLB-based URDF if exists
+    # Prefer *_glb.urdf if present
     if "glb" not in robot_name:
         filepath = str(filepath).replace(".urdf", "_glb.urdf")
     else:
@@ -133,7 +131,7 @@ def _load_robot_for_config(
 
     robot = loader.load(filepath)
 
-    # Adjust initial robot pose to avoid clipping
+    # Base height tuning per robot type
     if "ability" in robot_name:
         base_z = -0.15
     elif "shadow" in robot_name:
@@ -151,7 +149,7 @@ def _load_robot_for_config(
     else:
         base_z = -0.15
 
-    base_pos = np.array([0.0, 0.0, base_z]) + xy_offset
+    base_pos = np.array([0.0, 0.0, base_z], dtype=float) + xy_offset
     base_pose = sapien.Pose(base_pos)
     robot.set_pose(base_pose)
 
@@ -170,19 +168,16 @@ def start_retargeting(
 ):
     """
     Bimanual retargeting (right + left hand) with wrist orientation.
-    Wrist calibration:
-      - No key press needed.
-      - After the viewer starts, we wait 5 seconds.
-      - Around 5 seconds, current wrist orientations (for each visible hand)
-        are stored as calibration poses.
-      - From then on, all wrist rotations are relative to that pose.
+    - Uses MediaPipe Holistic for hand + pose.
+    - Auto-calibrates wrist orientation after 5 seconds.
+    - Horizontal position of each robot hand is driven by 2D image x-position.
     """
     RetargetingConfig.set_default_urdf_dir(str(robot_dir))
     logger.info(
-        f"Start bimanual retargeting with robot={robot_name}, type={retargeting_type}"
+        f"Start holistic bimanual retargeting with robot={robot_name}, type={retargeting_type}"
     )
 
-    # Load configs for both hands
+    # Load configs & build retargeters for both hands
     cfg_right = RetargetingConfig.load_from_file(
         get_default_config_path(robot_name, retargeting_type, HandType.right)
     )
@@ -193,19 +188,14 @@ def start_retargeting(
     retargeting_right = cfg_right.build()
     retargeting_left = cfg_left.build()
 
-    calib_hand_dist = [None]
-    base_gap = 0.24  # robot hands default distance (tune as you like)
-    base_z = -0.13   # your current ground offset for hands
-
-    gap_state = [base_gap]
-
-    # Single detector that returns both hands
+    # Single holistic detector that returns both hands
     detector = HolisticBimanualDetector(
         min_detection_confidence=0.7,
         min_tracking_confidence=0.7,
         selfie=False,
     )
 
+    # Renderer setup
     sapien.render.set_viewer_shader_dir("default")
     sapien.render.set_camera_shader_dir("default")
 
@@ -229,7 +219,7 @@ def start_retargeting(
         sapien.Pose([2, 1, 2], [0.707, 0, 0.707, 0]), np.array([1, 1, 1]), 5, 5
     )
 
-    # Camera (you said you didn't change camera settings, so keep as-is)
+    # Camera
     cam = scene.add_camera(
         name="Cheese!", width=600, height=600, fovy=1, near=0.1, far=10
     )
@@ -242,7 +232,7 @@ def start_retargeting(
     viewer.control_window.toggle_camera_lines(False)
     viewer.set_camera_pose(cam.get_local_pose())
 
-    # Load right/left robots with a small Y-offset so they don't overlap
+    # Load right/left robots with a small Y-offset so they don't overlap initially
     robot_right, base_pose_right = _load_robot_for_config(
         scene, cfg_right.urdf_path, xy_offset=np.array([0.0, +0.12, 0.0])
     )
@@ -250,21 +240,18 @@ def start_retargeting(
         scene, cfg_left.urdf_path, xy_offset=np.array([0.0, -0.12, 0.0])
     )
 
-    base_pos_right = base_pose_right.p.copy()
-    base_pos_left = base_pose_left.p.copy()
+    # Use right hand's initial Z as shared base height
+    base_z = base_pose_right.p[2]
 
     # Wrist calibration per hand (None until calibrated)
     calib_wrist_R_right = [None]
     calib_wrist_R_left = [None]
 
-    calib_wrist_pos_right = [None]  # 3D wrist position at calibration (Right)
-    calib_wrist_pos_left = [None]   # 3D wrist position at calibration (Left)
-
     # When did we start? (for 5s auto-calibration)
     start_time = time.time()
     calibration_delay = 5.0  # seconds
 
-    # Mapping from retargeting joint order to SAPIEN joint order (per robot)
+    # Map retargeter joint order → SAPIEN joint order (per robot)
     # Right hand
     sapien_joint_names_R = [joint.get_name() for joint in robot_right.get_active_joints()]
     retargeting_joint_names_R = retargeting_right.joint_names
@@ -280,6 +267,9 @@ def start_retargeting(
     ).astype(int)
 
     while True:
+        # ------------------------------------------------------------------
+        # Fetch frame
+        # ------------------------------------------------------------------
         try:
             bgr = queue.get(timeout=5)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -287,15 +277,19 @@ def start_retargeting(
             logger.error("Failed to fetch image from camera in 5 seconds.")
             return
 
-        # Detect both hands
+        # ------------------------------------------------------------------
+        # Detect hands via Holistic
+        # ------------------------------------------------------------------
         hands = detector.detect(rgb)
 
-        # Draw all detected hands
+        # Draw all detected hands for visualization
         keypoint_2d_list = [h["keypoint_2d"] for h in hands]
         bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d_list, style="default")
         cv2.imshow("realtime_retargeting_demo", bgr)
 
+        # ------------------------------------------------------------------
         # Extract per-hand data
+        # ------------------------------------------------------------------
         joint_pos_R = None
         joint_pos_L = None
         wrist_rot_R_raw = None
@@ -304,7 +298,7 @@ def start_retargeting(
         keypoint_2d_L = None
 
         for h in hands:
-            handedness = h["handedness"]  # "Right" or "Left"
+            handedness = h["handedness"]  # "Right" or "Left" in operator convention
             if handedness == "Right":
                 joint_pos_R = h["joint_pos"]
                 wrist_rot_R_raw = h["wrist_rot"]
@@ -317,42 +311,39 @@ def start_retargeting(
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
 
-        # 5s auto-calibration: after delay, use current wrist pose as reference
+        # ------------------------------------------------------------------
+        # 5s auto-calibration: use current wrist orientation as reference
+        # ------------------------------------------------------------------
         elapsed = time.time() - start_time
         if elapsed >= calibration_delay:
-            # Right hand
-            if calib_wrist_R_right[0] is None and wrist_R_R is not None and joint_pos_R is not None:
+            if calib_wrist_R_right[0] is None and wrist_R_R is not None:
                 calib_wrist_R_right[0] = wrist_R_R.copy()
-                calib_wrist_pos_right[0] = joint_pos_R[0].copy()  # index 0 = wrist
                 logger.info("Right wrist orientation calibrated (auto after 5s).")
 
-            # Left hand
-            if calib_wrist_R_left[0] is None and wrist_R_L is not None and joint_pos_L is not None:
+            if calib_wrist_R_left[0] is None and wrist_R_L is not None:
                 calib_wrist_R_left[0] = wrist_R_L.copy()
-                calib_wrist_pos_left[0] = joint_pos_L[0].copy()
                 logger.info("Left wrist orientation calibrated (auto after 5s).")
 
-        # Keyboard controls: only 'q' to quit
+        # Keyboard controls: 'q' to quit
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
 
+        # ------------------------------------------------------------------
+        # Map 2D hand position → horizontal robot position
+        # ------------------------------------------------------------------
+        base_x = 0.0  # keep depth fixed
 
-        # --- 손의 2D 위치를 이용해 로봇 손 좌우 위치 결정 ---
+        # Maximum side movement (meters) for each hand from screen center
+        max_side = 0.25  # 25cm left/right
 
-        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 그대로 고정
-        base_z = base_z  # 너가 이미 쓰는 높이 값 재사용 (예: -0.13)
-
-        # 화면 기준 최대 좌우 이동 범위 (미터)
-        max_side = 0.25  # 0.25m = 25cm 왼/오른쪽으로
-
-        # 기본 위치 (손 안 보일 때)
+        # Default positions if a hand is not visible
         y_R = +0.12
         y_L = -0.12
 
         if keypoint_2d_R is not None:
             u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
-            # 0.0 → -max_side (왼쪽 끝), 0.5 → 0, 1.0 → +max_side (오른쪽 끝)
+            # 0.0 → -max_side (left), 0.5 → 0, 1.0 → +max_side (right)
             y_R = (u_R - 0.5) * 2.0 * max_side
 
         if keypoint_2d_L is not None:
@@ -360,13 +351,11 @@ def start_retargeting(
             y_L = (u_L - 0.5) * 2.0 * max_side
 
         base_pos_right = np.array([base_x, y_R, base_z], dtype=float)
-        base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
+        base_pos_left = np.array([base_x, y_L, base_z], dtype=float)
 
-
-
-
-
-        # ----------------- RIGHT HAND RETARGETING -----------------
+        # ------------------------------------------------------------------
+        # RIGHT HAND: finger retargeting + wrist rotation
+        # ------------------------------------------------------------------
         if joint_pos_R is not None:
             ret_type_R = retargeting_right.optimizer.retargeting_type
             indices_R = retargeting_right.optimizer.target_link_human_indices
@@ -384,21 +373,21 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
-
+            # Wrist
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
+
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
                 R_robot_R = R_rel_R @ R_robot0_R
+
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
                 robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
 
-
-
-
-
-        # ----------------- LEFT HAND RETARGETING ------------------
+        # ------------------------------------------------------------------
+        # LEFT HAND: finger retargeting + wrist rotation
+        # ------------------------------------------------------------------
         if joint_pos_L is not None:
             ret_type_L = retargeting_left.optimizer.retargeting_type
             indices_L = retargeting_left.optimizer.target_link_human_indices
@@ -416,30 +405,21 @@ def start_retargeting(
             qpos_L = retargeting_left.retarget(ref_value_L)
             robot_left.set_qpos(qpos_L[retargeting_to_sapien_L])
 
-            # ----- LEFT WRIST -----
+            # Wrist
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
-                # 1) 캘리브 기준 상대 회전
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
-
-                # 2) 우리가 정의한 축 제한(예: Z축만, 혹은 단순화된 회전) 적용
                 R_rel_L = _simplify_wrist_rotation(R_rel_L)
 
-                # 3) 왼손 기본 자세의 회전행렬 가져오기
                 base_T_L = base_pose_left.to_transformation_matrix()
                 R_robot0_L = base_T_L[:3, :3]
-
-                # 4) 기본 회전에 상대 회전 덧붙이기
                 R_robot_L = R_rel_L @ R_robot0_L
 
-                # 5) 최종 쿼터니언 + 왼손 베이스 위치(base_pos_left)로 pose 설정
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
-                pose_L = sapien.Pose(base_pos_left, q_robot_L)
-                robot_left.set_pose(pose_L)
+                robot_left.set_pose(sapien.Pose(base_pos_left, q_robot_L))
 
-
-
-
-        # Render a few times for smoother display
+        # ------------------------------------------------------------------
+        # Render
+        # ------------------------------------------------------------------
         for _ in range(2):
             viewer.render()
 
@@ -469,17 +449,18 @@ def produce_frame(queue: multiprocessing.Queue, camera_path: Optional[str] = Non
 def main(
     robot_name: RobotName,
     retargeting_type: RetargetingType,
-    hand_type: HandType,  # kept for CLI compatibility, but ignored (we use both hands)
+    hand_type: HandType,   # kept for CLI compatibility, but ignored (we use both hands)
     camera_path: Optional[str] = None,
 ):
     """
-    Detect the human hand poses from a live camera stream and retarget them
+    Detect human hand poses from a live camera stream and retarget them
     to two robot hands (right and left) in the same SAPIEN scene.
 
     Wrist calibration:
         - No key interaction needed.
         - After 5 seconds, the current hand poses (for each visible hand)
           are used as the wrist reference orientation.
+
     Controls:
         q : quit
     """
