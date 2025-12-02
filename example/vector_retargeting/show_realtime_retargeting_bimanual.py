@@ -45,18 +45,28 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
 
 
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
-    """Keep only rotation around Z axis (with inverted direction to match operator)."""
+    """Keep only Z-axis rotation, but amplify it to look more dynamic."""
     R_rel = np.asarray(R_rel, dtype=float)
 
     if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
         return np.eye(3)
 
-    # Invert sign so that human "inward" twist → robot "inward" twist
+    # 1) 기본 Z축 회전 각도 추출 (부호는 이전에 맞춰둔 방향 유지)
     angle_z = -np.arctan2(R_rel[1, 0], R_rel[0, 0])
 
-    if abs(angle_z) < 1e-4:
+    # 2) 작은 노이즈는 무시 (너무 작으면 그냥 안 돈 걸로)
+    if abs(angle_z) < 1e-3:
         return np.eye(3)
 
+    # 3) 각도에 게인 걸어서 더 역동적으로
+    gain = 2.0  # ← 여기 숫자 키우면 더 과하게, 줄이면 더 얌전하게
+    angle_z *= gain
+
+    # 4) 너무 과한 회전은 클램프 (예: ±120도 제한)
+    max_angle = np.deg2rad(120.0)
+    angle_z = np.clip(angle_z, -max_angle, max_angle)
+
+    # 5) 순수 Z축 회전 행렬 생성
     cz = np.cos(angle_z)
     sz = np.sin(angle_z)
 
@@ -69,6 +79,7 @@ def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
         dtype=float,
     )
     return Rz
+
 
 
 
