@@ -443,14 +443,20 @@ def start_retargeting(
 # ---------------------------------------------------------------------------
 # Frame producer (camera → queue)
 # ---------------------------------------------------------------------------
-
+url = "rtsp://"
 def produce_frame(queue: multiprocessing.Queue, camera_path: Optional[str] = None):
     if camera_path is None:
-        cap = cv2.VideoCapture(0)
+        # cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(url)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # cap.set(cv2.CAP_PROP_FPS, 30)
     else:
         cap = cv2.VideoCapture(camera_path)
 
     while cap.isOpened():
+        for _ in range(6):
+            cap.grab()
+
         success, image = cap.read()
         time.sleep(1 / 30.0)
         if not success:
