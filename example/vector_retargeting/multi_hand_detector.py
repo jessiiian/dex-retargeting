@@ -5,6 +5,7 @@ from mediapipe.framework.formats import landmark_pb2
 from mediapipe.python.solutions import hands_connections
 from mediapipe.python.solutions.drawing_utils import DrawingSpec
 from mediapipe.python.solutions.hands import HandLandmark
+from pytransform3d import rotations
 
 OPERATOR2MANO_RIGHT = np.array(
     [
@@ -123,6 +124,59 @@ class MultiHandDetector:
         frame = np.stack([x, normal, z], axis=1)
         return frame
 
+    @staticmethod
+    def canonicalize_joint_pos_with_palm(
+        joint_pos: np.ndarray,
+        wrist_rot: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Make finger pose invariant to palm vs back-of-hand orientation.
+
+        Idea:
+        - Use wrist_rot to know palm normal in camera frame.
+        - If palm is facing the camera, flip joint_pos around local X-axis
+          so that both palm-up and palm-down map to the same canonical pose.
+        - Wrist rotation itself is still used separately for robot wrist,
+          so the visual 'flipping' is preserved in wrist, but fingers see
+          a consistent frame.
+        """
+        if joint_pos is None or wrist_rot is None:
+            return joint_pos
+
+        joint_pos = np.asarray(joint_pos, dtype=float)
+        wrist_rot = np.asarray(wrist_rot, dtype=float)
+
+        if joint_pos.shape != (21, 3) or wrist_rot.shape != (3, 3):
+            return joint_pos
+
+        # In estimate_frame_from_hand_points, we stacked [x, normal, z] as columns
+        # -> the 2nd column (index 1) is palm normal in camera/world coords.
+        palm_normal_cam = wrist_rot[:, 1]  # shape (3,)
+        palm_normal_cam = palm_normal_cam / (np.linalg.norm(palm_normal_cam) + 1e-8)
+
+        # In MediaPipe world coords, camera forward is approximately +Z
+        cam_forward = np.array([0.0, 0.0, 1.0], dtype=float)
+
+        # If palm normal has positive dot with camera forward, it is 'facing camera'
+        facing_camera = float(np.dot(palm_normal_cam, cam_forward)) > 0.0
+
+        if not facing_camera:
+            # Palm is facing away from camera (back-of-hand visible)
+            # -> we already like this as our canonical 'palm-down' frame.
+            return joint_pos
+
+        # If palm is facing camera, we rotate the pose 180° around the local X-axis
+        # so that 'palm-up open hand' maps to the same finger pose as 'palm-down open hand'.
+        axis_angle = np.array([1.0, 0.0, 0.0, np.pi], dtype=float)
+        R_flip = rotations.matrix_from_axis_angle(axis_angle)
+
+        # joint_pos is already in wrist_rot @ operator2mano space (row vectors).
+        # We want to flip *around local X* of that space, so right-multiply R_flip.
+        joint_pos_flipped = joint_pos @ R_flip
+
+        return joint_pos_flipped
+
+
     def detect(self, rgb):
         """Detect up to 2 hands in the given RGB image.
 
@@ -176,6 +230,12 @@ class MultiHandDetector:
                 operator2mano = OPERATOR2MANO_LEFT
 
             joint_pos = keypoint_3d_centered @ mediapipe_wrist_rot @ operator2mano
+
+            # 🔴 NEW: make finger pose invariant to palm vs back-of-hand
+            joint_pos = self.canonicalize_joint_pos_with_palm(
+                joint_pos,
+                mediapipe_wrist_rot,
+            )
 
             hands.append(
                 {
