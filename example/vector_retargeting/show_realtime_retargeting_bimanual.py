@@ -249,7 +249,7 @@ def start_retargeting(
     cam = scene.add_camera(
         name="Cheese!", width=600, height=600, fovy=1, near=0.1, far=10
     )
-    cam.set_local_pose(sapien.Pose([0.50, 0, 0.0], [0, 0, 0, -1]))
+    cam.set_local_pose(sapien.Pose([0.80, 0, 0.6], [0, 0, 0, -1]))
 
     viewer = Viewer()
     viewer.set_scene(scene)
