@@ -168,7 +168,7 @@ def _tilt_base_pose_down(base_pose: sapien.Pose) -> sapien.Pose:
     R0 = T[:3, :3]  # original rotation
 
     # Rotate -90 degrees around X axis: [1, 0, 0, -pi/2]
-    axis_angle = np.array([1.0, 0.0, 0.0, -np.pi / 2.0])
+    axis_angle = np.array([0.0, 1.0, 0.0, -np.pi / 2.0])
     R_down = rotations.matrix_from_axis_angle(axis_angle)
 
     # New base rotation: first make it face down, then keep original orientation baked in
@@ -411,7 +411,7 @@ def start_retargeting(
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
-                R_robot_R = R_rel_R @ R_robot0_R
+                R_robot_R = R_robot0_R @ R_rel_R
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
                 robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
 
@@ -450,7 +450,7 @@ def start_retargeting(
                 R_robot0_L = base_T_L[:3, :3]
 
                 # 4) 기본 회전에 상대 회전 덧붙이기
-                R_robot_L = R_rel_L @ R_robot0_L
+                R_robot_L = R_robot0_L @ R_rel_L
 
                 # 5) 최종 쿼터니언 + 왼손 베이스 위치(base_pos_left)로 pose 설정
                 q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
