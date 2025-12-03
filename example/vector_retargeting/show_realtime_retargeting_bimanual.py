@@ -158,6 +158,26 @@ def _load_robot_for_config(
     return robot, base_pose
 
 
+def _tilt_base_pose_down(base_pose: sapien.Pose) -> sapien.Pose:
+    """Rotate the robot base so that the hand's main axis points toward the floor.
+
+    We apply an extra -90° rotation around the X axis to the existing base rotation.
+    Wrist retargeting (R_rel) will then spin around this 'downward' axis.
+    """
+    T = base_pose.to_transformation_matrix()
+    R0 = T[:3, :3]  # original rotation
+
+    # Rotate -90 degrees around X axis: [1, 0, 0, -pi/2]
+    axis_angle = np.array([1.0, 0.0, 0.0, -np.pi / 2.0])
+    R_down = rotations.matrix_from_axis_angle(axis_angle)
+
+    # New base rotation: first make it face down, then keep original orientation baked in
+    R_new = R_down @ R0
+    q_new = rotations.quaternion_from_matrix(R_new)
+
+    return sapien.Pose(base_pose.p, q_new)
+
+
 # ---------------------------------------------------------------------------
 # Main retargeting process (bimanual, 5s auto-calibration)
 # ---------------------------------------------------------------------------
@@ -245,6 +265,11 @@ def start_retargeting(
     robot_left, base_pose_left = _load_robot_for_config(
         scene, cfg_left.urdf_path, xy_offset=np.array([0.0, -0.12, 0.0])
     )
+
+    base_pose_right = _tilt_base_pose_down(base_pose_right)
+    base_pose_left = _tilt_base_pose_down(base_pose_left)
+    robot_right.set_pose(base_pose_right)
+    robot_left.set_pose(base_pose_left)
 
     base_pos_right = base_pose_right.p.copy()
     base_pos_left = base_pose_left.p.copy()
