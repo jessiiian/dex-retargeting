@@ -249,7 +249,17 @@ def start_retargeting(
     cam = scene.add_camera(
         name="Cheese!", width=600, height=600, fovy=1, near=0.1, far=10
     )
-    cam.set_local_pose(sapien.Pose([0.50, 0, 0.0], [0, 0, 0, -1]))
+
+    # 카메라를 위로 올리고, 아래를 내려다보게 회전
+    cam_pos = np.array([0.0, 0.0, 0.6])  # z=0.6m 위에서 중앙을 내려다봄
+
+    # y축 기준으로 -90도 회전 → 위에서 바닥을 내려다보는 탑뷰 느낌
+    axis_angle = np.array([0.0, 1.0, 0.0, -np.pi / 2.0])
+    R_cam = rotations.matrix_from_axis_angle(axis_angle)
+    q_cam = rotations.quaternion_from_matrix(R_cam)
+
+    cam.set_local_pose(sapien.Pose(cam_pos, q_cam))
+
 
     viewer = Viewer()
     viewer.set_scene(scene)
