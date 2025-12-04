@@ -461,7 +461,7 @@ def start_retargeting(
 
                 R_base_R = rotations.matrix_from_quaternion(base_quat_right)
                 R_twist_R = rotations.matrix_from_axis_angle(
-                    np.array([0.0, 0.0, 1.0, twist_R])
+                    np.array([0.0, 0.0, 1.0, -twist_R])
                 )
                 R_final_R = R_twist_R @ R_base_R
                 q_final_R = rotations.quaternion_from_matrix(R_final_R)
@@ -499,7 +499,7 @@ def start_retargeting(
 
                 R_base_L = rotations.matrix_from_quaternion(base_quat_left)
                 R_twist_L = rotations.matrix_from_axis_angle(
-                    np.array([0.0, 0.0, 1.0, twist_L])
+                    np.array([0.0, 0.0, 1.0, -twist_L])
                 )
                 R_final_L = R_twist_L @ R_base_L
                 q_final_L = rotations.quaternion_from_matrix(R_final_L)
