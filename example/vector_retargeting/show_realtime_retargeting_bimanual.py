@@ -43,6 +43,32 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
+def _extract_z_twist(R_rel: np.ndarray, gain: float = 0.6) -> float:
+    """Relative rotation R_rel에서 Z축 방향 twist만 뽑아서 각도로 리턴 (rad).
+
+    - gain으로 크기 조절 (0.0 ~ 1.0 정도)
+    - 부호가 반대로 느껴지면 angle_z 앞에 -를 붙이면 됨.
+    """
+    R_rel = np.asarray(R_rel, dtype=float)
+    if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
+        return 0.0
+
+    # 회전행렬 정규화 (수치 노이즈 날리는 용도)
+    U, _, Vt = np.linalg.svd(R_rel)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R[:, 2] *= -1
+
+    # Z축 회전 성분만 추출
+    angle_z = np.arctan2(R[1, 0], R[0, 0])  # -pi ~ pi
+
+    # 크기 조절 & 클램프
+    angle_z *= gain
+    max_angle = np.deg2rad(75.0)
+    angle_z = float(np.clip(angle_z, -max_angle, max_angle))
+    return angle_z
+
+
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
     """Use only Z-axis rotation from the relative wrist rotation.
 
@@ -436,14 +462,22 @@ def start_retargeting(
 
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                R_rel_R = _simplify_wrist_rotation(R_rel_R)
-                base_T_R = base_pose_right.to_transformation_matrix()
-                R_robot0_R = base_T_R[:3, :3]
-                R_robot_R = R_rel_R @ R_robot0_R
-                q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
+                twist_R = _extract_z_twist(R_rel_R, gain=0.6)
+                R_base_R = rotations.matrix_from_quaternion(base_quat_right)
+
+                # Z축 기준 회전행렬 만들기
+                R_twist_R = rotations.matrix_from_axis_angle(
+                    np.array([0.0, 0.0, 1.0, twist_R])
+                )
+
+                # 최종 회전 = twist * base
+                R_final_R = R_twist_R @ R_base_R
+                q_final_R = rotations.quaternion_from_matrix(R_final_R)
+            else:
+                q_final_R = base_quat_right
 
 
+            robot_right.set_pose(sapien.Pose(base_pos_right, q_final_R))
 
 
 
