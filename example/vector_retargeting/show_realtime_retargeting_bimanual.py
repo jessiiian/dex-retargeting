@@ -43,7 +43,7 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
-def _extract_z_twist(R_rel: np.ndarray, gain: float = 0.6) -> float:
+def _extract_z_twist(R_rel: np.ndarray, gain: float = 0.8) -> float:
     """Relative rotation R_rel에서 Z축 방향 twist만 뽑아서 각도로 리턴 (rad).
 
     - gain으로 크기 조절 (0.0 ~ 1.0 정도)
@@ -64,7 +64,7 @@ def _extract_z_twist(R_rel: np.ndarray, gain: float = 0.6) -> float:
 
     # 크기 조절 & 클램프
     angle_z *= gain
-    max_angle = np.deg2rad(75.0)
+    max_angle = np.deg2rad(135.0)
     angle_z = float(np.clip(angle_z, -max_angle, max_angle))
     return angle_z
 
@@ -412,19 +412,19 @@ def start_retargeting(
 
         # 스케일 튜닝용
         scale_xy = 0.4   # 좌우 이동 크기
-        scale_x  = 0.4   # 앞뒤 이동 크기
+        scale_x  = 1.2   # 앞뒤 이동 크기
 
         if wrist_pos_world_R is not None:
             mx_R, my_R, mz_R = wrist_pos_world_R  # Mediapipe world frame (대략 m 단위)
 
             # mz_R: 카메라에서 멀어질수록 값이 커지는 방향 → SAPIEN x로
             # mx_R: 좌우 방향 → SAPIEN y에 더해주기
-            x_R = base_x - mz_R * scale_x
+            x_R = base_x + mz_R * scale_x
             y_R = default_y_R + mx_R * scale_xy
 
         if wrist_pos_world_L is not None:
             mx_L, my_L, mz_L = wrist_pos_world_L
-            x_L = base_x - mz_L * scale_x
+            x_L = base_x + mz_L * scale_x
             y_L = default_y_L + mx_L * scale_xy
 
         # 최종 베이스 위치
@@ -457,7 +457,7 @@ def start_retargeting(
             # Wrist rotation (Z축 twist만 사용)
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                twist_R = _extract_z_twist(R_rel_R, gain=0.6)
+                twist_R = _extract_z_twist(R_rel_R, gain=0.8)
 
                 R_base_R = rotations.matrix_from_quaternion(base_quat_right)
                 R_twist_R = rotations.matrix_from_axis_angle(
@@ -495,7 +495,7 @@ def start_retargeting(
             # Wrist rotation (Z축 twist만 사용)
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
-                twist_L = _extract_z_twist(R_rel_L, gain=0.6)
+                twist_L = _extract_z_twist(R_rel_L, gain=0.8)
 
                 R_base_L = rotations.matrix_from_quaternion(base_quat_left)
                 R_twist_L = rotations.matrix_from_axis_angle(
