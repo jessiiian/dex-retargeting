@@ -407,6 +407,9 @@ def start_retargeting(
 
 
 
+        robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
+        robot_left.set_qpos(qpos_L[retargeting_to_sapien_L])
+
         robot_right.set_pose(sapien.Pose(base_pos_right, base_quat_right))
         robot_left.set_pose(sapien.Pose(base_pos_left,  base_quat_left))
 
