@@ -283,6 +283,8 @@ def start_retargeting(
         else:
             wrist_joint_names = ["lh_WRJ1", "lh_WRJ2"]
 
+        logger.error("wrist joint names: " + {wrist_joint_names})
+
         wrist_idx_in_robot = []
         for jn in wrist_joint_names:
             if jn in sapien_joint_names_R:
@@ -402,26 +404,26 @@ def start_retargeting(
             # ---- [TEST] Shadow wrist demo: swing WRJ1 sinusoidally ----
             TEST_WRIST_ONLY = True  # ← 일단 True로 켜놓고 테스트
 
-        if TEST_WRIST_ONLY and wrist_idx_in_robot.size > 0:
-            # 손가락은 전부 기본값(0)으로 두고
-            full_qpos = np.zeros(robot_right.dof, dtype=float)
+            if TEST_WRIST_ONLY and wrist_idx_in_robot.size > 0:
+                # 손가락은 전부 기본값(0)으로 두고
+                full_qpos = np.zeros(robot_right.dof, dtype=float)
 
-            t = time.time()
-            # 손목 1: 위아래로 크게 (WRJ1)
-            angle1 = 0.8 * np.sin(2.0 * np.pi * 0.5 * t)  # ±0.8 rad, 0.5Hz
-            # 손목 2: 좌우로 약간 (WRJ2)
-            angle2 = 0.5 * np.sin(2.0 * np.pi * 0.5 * t + np.pi / 2.0)
+                t = time.time()
+                # 손목 1: 위아래로 크게 (WRJ1)
+                angle1 = 0.8 * np.sin(2.0 * np.pi * 0.5 * t)  # ±0.8 rad, 0.5Hz
+                # 손목 2: 좌우로 약간 (WRJ2)
+                angle2 = 0.5 * np.sin(2.0 * np.pi * 0.5 * t + np.pi / 2.0)
 
-            full_qpos[wrist_idx_in_robot[0]] = angle1
-            if wrist_idx_in_robot.size > 1:
-                full_qpos[wrist_idx_in_robot[1]] = angle2
+                full_qpos[wrist_idx_in_robot[0]] = angle1
+                if wrist_idx_in_robot.size > 1:
+                    full_qpos[wrist_idx_in_robot[1]] = angle2
 
-            robot_right.set_qpos(full_qpos)
+                robot_right.set_qpos(full_qpos)
 
-            # 이 프레임에서는 retargeting, wrist_R, set_pose 이런 나머지 로직 스킵
-            for _ in range(2):
-                viewer.render()
-            continue
+                # 이 프레임에서는 retargeting, wrist_R, set_pose 이런 나머지 로직 스킵
+                for _ in range(2):
+                    viewer.render()
+                continue
 
             # robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
