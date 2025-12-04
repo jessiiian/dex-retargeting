@@ -325,6 +325,14 @@ def start_retargeting(
     logger.info(f"wrist_idx_in_robot = {wrist_idx_in_robot}")
 
 
+    # 오른손 로봇 로드 직후
+    robot_right = loader.load(filepath_right)
+    robot_right.set_pose(sapien.Pose([0, 0, -0.15]))  # 예시
+
+    base_pose_right = robot_right.get_pose()
+    base_pos_right = base_pose_right.p.copy()
+
+
     while True:
         try:
             bgr = queue.get(timeout=5)
@@ -432,20 +440,41 @@ def start_retargeting(
                 # 1) 상대 회전 (현재 손목 vs 캘리브 기준자세)
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
 
-                # 2) 우리가 정의한 축 제한 / 단순화 (축 흐트러짐 방지용)
-                R_rel_R = _simplify_wrist_rotation(R_rel_R)
+                # 수치 안정화 (정확한 회전행렬로 투영)
+                U, _, Vt = np.linalg.svd(R_rel_R)
+                R_rel_R = U @ Vt
+                if np.linalg.det(R_rel_R) < 0:
+                    R_rel_R[:, 2] *= -1
 
-                # 3) 초기 로봇 포즈에서 회전만 덧입히기
+                # 2) Euler 각도로 변환 (X=0, Y=1, Z=2 축, intrinsic)
+                ax, ay, az = rotations.euler_from_matrix(R_rel_R, 0, 1, 2, extrinsic=False)
+
+                # 디버그 찍어보면 어느 축이 많이 바뀌는지 알 수 있음
+                logger.debug(f"Right wrist euler (ax, ay, az) = ({ax:.3f}, {ay:.3f}, {az:.3f})")
+
+                # 3) 여기서는 "앞뒤 까딱" (pitch)만 사용해보자: ay 사용
+                pitch = ay * 1.5  # 움직임 확대 (gain=1.5). 너무 크면 1.0으로 줄여봐
+
+                # 너무 소소한 변화는 무시
+                if abs(pitch) < 1e-3:
+                    R_pitch = np.eye(3)
+                else:
+                    # Y축 기준 회전 (카메라 기준 앞/뒤 각도)
+                    R_pitch = rotations.matrix_from_axis_angle(
+                        np.array([0.0, 1.0, 0.0, pitch], dtype=float)
+                    )
+
+                # 4) base_pose_right의 회전에 pitch를 곱해 최종 회전 만듦
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
+                R_robot_R = R_pitch @ R_robot0_R
 
-                # (옵션) WRIST_VIEW_ROT 같은 view 보정 쓰고 싶으면 여기에 끼우면 됨
-                R_robot_R = R_rel_R @ R_robot0_R
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
 
-                # 4) 위치(base_pos_right)는 그대로, 회전만 업데이트
+                # 5) 위치는 네가 계산하는 base_pos_right 그대로 사용
                 pose_R = sapien.Pose(base_pos_right, q_robot_R)
                 robot_right.set_pose(pose_R)
+
 
 
         # ----------------- LEFT HAND RETARGETING ------------------
