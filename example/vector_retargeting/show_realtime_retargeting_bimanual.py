@@ -409,76 +409,56 @@ def start_retargeting(
         base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
 
 
-
-
-
         # ----------------- RIGHT HAND RETARGETING -----------------
+        #######
         if joint_pos_R is not None:
-            ret_type_R = retargeting_right.optimizer.retargeting_type
-            indices_R = retargeting_right.optimizer.target_link_human_indices
+            # ---------- 1) 손가락 retargeting ----------
+            retargeting_type = retargeting_right.optimizer.retargeting_type
+            indices = retargeting_right.optimizer.target_link_human_indices
 
-            if ret_type_R == "POSITION":
-                ref_value_R = joint_pos_R[indices_R, :]
+            if retargeting_type == "POSITION":
+                ref_value = joint_pos_R[indices, :]
             else:
-                origin_indices_R = indices_R[0, :]
-                task_indices_R = indices_R[1, :]
-                ref_value_R = (
-                    joint_pos_R[task_indices_R, :] - joint_pos_R[origin_indices_R, :]
-                )
+                origin_indices = indices[0, :]
+                task_indices = indices[1, :]
+                ref_value = joint_pos_R[task_indices, :] - joint_pos_R[origin_indices, :]
+            # retargeting에서 나온 qpos는 "retargeting_joint_names" 순서
+            qpos = retargeting_right.retarget(ref_value)
 
-            # Fingers
-            qpos_R = retargeting_right.retarget(ref_value_R)
-            full_qpos = qpos_R[retargeting_to_sapien_R].copy()
+            # 로봇 전체 dof 배열 생성 후, 손가락 부분 채우기
+            full_qpos = np.zeros(robot_right.dof, dtype=float)
+            full_qpos[retargeting_to_sapien_R] = qpos
 
-            #######
-            if joint_pos_R is not None:
-                # ---------- 1) 손가락 retargeting ----------
-                retargeting_type = retargeting_right.optimizer.retargeting_type
-                indices = retargeting_right.optimizer.target_link_human_indices
+            # ---------- 2) 손목(MediaPipe) → Shadow 손목 조인트 ----------
+            if (
+                wrist_R_R is not None
+                and calib_wrist_R_right[0] is not None
+                and wrist_idx_in_robot.size > 0
+            ):
+                # 상대 회전 (현재 손목 vs 캘리브 기준자세)
+                R_rel = wrist_R_R @ calib_wrist_R_right[0].T
 
-                if retargeting_type == "POSITION":
-                    ref_value = joint_pos_R[indices, :]
-                else:
-                    origin_indices = indices[0, :]
-                    task_indices = indices[1, :]
-                    ref_value = joint_pos_R[task_indices, :] - joint_pos_R[origin_indices, :]
-                # retargeting에서 나온 qpos는 "retargeting_joint_names" 순서
-                qpos = retargeting_right.retarget(ref_value)
+                # 상대 회전을 Shadow 손목 두 조인트 각도로 변환
+                flex, dev = _wrist_rel_to_shadow_angles(R_rel)
 
-                # 로봇 전체 dof 배열 생성 후, 손가락 부분 채우기
-                full_qpos = np.zeros(robot_right.dof, dtype=float)
-                full_qpos[retargeting_to_sapien_R] = qpos
+                # rh_WRJ1, rh_WRJ2에 꽂기
+                full_qpos[wrist_idx_in_robot[0]] = flex
+                if wrist_idx_in_robot.size > 1:
+                    full_qpos[wrist_idx_in_robot[1]] = dev
 
-                # ---------- 2) 손목(MediaPipe) → Shadow 손목 조인트 ----------
-                if (
-                    wrist_R_R is not None
-                    and calib_wrist_R_right[0] is not None
-                    and wrist_idx_in_robot.size > 0
-                ):
-                    # 상대 회전 (현재 손목 vs 캘리브 기준자세)
-                    R_rel = wrist_R_R @ calib_wrist_R_right[0].T
-
-                    # 상대 회전을 Shadow 손목 두 조인트 각도로 변환
-                    flex, dev = _wrist_rel_to_shadow_angles(R_rel)
-
-                    # rh_WRJ1, rh_WRJ2에 꽂기
-                    full_qpos[wrist_idx_in_robot[0]] = flex
-                    if wrist_idx_in_robot.size > 1:
-                        full_qpos[wrist_idx_in_robot[1]] = dev
-
-                # ---------- 3) 최종 qpos 적용 ----------
-                robot_right.set_qpos(full_qpos)
+            # ---------- 3) 최종 qpos 적용 ----------
+            robot_right.set_qpos(full_qpos)
 
 
-            if robot_name != RobotName.shadow:
-                if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                    R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                    R_rel_R = _simplify_wrist_rotation(R_rel_R)
-                    base_T_R = base_pose_right.to_transformation_matrix()
-                    R_robot0_R = base_T_R[:3, :3]
-                    R_robot_R = R_rel_R @ R_robot0_R
-                    q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                    robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
+        if robot_name != RobotName.shadow:
+            if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
+                R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+                R_rel_R = _simplify_wrist_rotation(R_rel_R)
+                base_T_R = base_pose_right.to_transformation_matrix()
+                R_robot0_R = base_T_R[:3, :3]
+                R_robot_R = R_rel_R @ R_robot0_R
+                q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
+                robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
 
 
         # ----------------- LEFT HAND RETARGETING ------------------
