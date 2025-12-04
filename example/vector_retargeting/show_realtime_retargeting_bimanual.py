@@ -425,43 +425,27 @@ def start_retargeting(
 
             # retargeting에서 나온 qpos (길이 = len(retargeting_joint_names_R))
             qpos_R = retargeting_right.retarget(ref_value_R)
+            robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
-            # 로봇 전체 DOF 배열 가져오기 (기존 값 유지한 채 일부만 갱신)
-            full_qpos = robot_right.get_qpos().copy()
-
-            # 오른손 joint 위치에만 손가락 qpos 채워넣기
-            # right_joint_indices: 로봇 qpos에서 오른손 joint 인덱스들
-            # retargeting_to_sapien_R: 그 인덱스에 대응하는 qpos_R 인덱스
-            full_qpos[wrist_idx_in_robot[0]] = qpos_R[retargeting_to_sapien_R]
-
-            # ---------- 2) MediaPipe → 손목 각도 계산 ----------
-            if (
-                wrist_R_R is not None
-                and calib_wrist_R_right[0] is not None
-                and wrist_idx_in_robot.size > 0
-            ):
-                R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                flex, dev = _wrist_rel_to_shadow_angles(R_rel_R)
-
-                # rh_WRJ1, rh_WRJ2에 덮어쓰기
-                full_qpos[wrist_idx_in_robot[0]] = flex
-                if wrist_idx_in_robot.size > 1:
-                    full_qpos[wrist_idx_in_robot[1]] = dev
-
-            # ---------- 3) 최종 qpos 적용 ----------
-            robot_right.set_qpos(full_qpos)
-
-
-
-        if robot_name != RobotName.shadow:
+            # ---- 여기서부터 손목만 추가 ----
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
+                # 1) 상대 회전 (현재 손목 vs 캘리브 기준자세)
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+
+                # 2) 우리가 정의한 축 제한 / 단순화 (축 흐트러짐 방지용)
                 R_rel_R = _simplify_wrist_rotation(R_rel_R)
+
+                # 3) 초기 로봇 포즈에서 회전만 덧입히기
                 base_T_R = base_pose_right.to_transformation_matrix()
                 R_robot0_R = base_T_R[:3, :3]
+
+                # (옵션) WRIST_VIEW_ROT 같은 view 보정 쓰고 싶으면 여기에 끼우면 됨
                 R_robot_R = R_rel_R @ R_robot0_R
                 q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
+
+                # 4) 위치(base_pos_right)는 그대로, 회전만 업데이트
+                pose_R = sapien.Pose(base_pos_right, q_robot_R)
+                robot_right.set_pose(pose_R)
 
 
         # ----------------- LEFT HAND RETARGETING ------------------
