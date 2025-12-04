@@ -43,6 +43,32 @@ def _wrist_rot_to_matrix(wrist_rot: Optional[np.ndarray]) -> Optional[np.ndarray
     return None
 
 
+def _extract_z_twist(R_rel: np.ndarray, gain: float = 0.6) -> float:
+    """Relative rotation R_rel에서 Z축 방향 twist만 뽑아서 각도로 리턴 (rad).
+
+    - gain으로 크기 조절 (0.0 ~ 1.0 정도)
+    - 부호가 반대로 느껴지면 angle_z 앞에 -를 붙이면 됨.
+    """
+    R_rel = np.asarray(R_rel, dtype=float)
+    if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
+        return 0.0
+
+    # 회전행렬 정규화 (수치 노이즈 날리는 용도)
+    U, _, Vt = np.linalg.svd(R_rel)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R[:, 2] *= -1
+
+    # Z축 회전 성분만 추출
+    angle_z = np.arctan2(R[1, 0], R[0, 0])  # -pi ~ pi
+
+    # 크기 조절 & 클램프
+    angle_z *= gain
+    max_angle = np.deg2rad(75.0)
+    angle_z = float(np.clip(angle_z, -max_angle, max_angle))
+    return angle_z
+
+
 def _simplify_wrist_rotation(R_rel: np.ndarray) -> np.ndarray:
     """Use only Z-axis rotation from the relative wrist rotation.
 
@@ -238,16 +264,33 @@ def start_retargeting(
     viewer.control_window.toggle_camera_lines(False)
     viewer.set_camera_pose(cam.get_local_pose())
 
-    # Load right/left robots with a small Y-offset so they don't overlap
+    # 1) 처음에는 가운데에 두 손을 거의 같은 위치에 로드
+    #    (y 오프셋은 일단 0으로 두고, 나중에 frame 루프에서 우리가 직접 y를 움직일 거야)
     robot_right, base_pose_right = _load_robot_for_config(
-        scene, cfg_right.urdf_path, xy_offset=np.array([0.0, +0.12, 0.0])
+        scene, cfg_right.urdf_path, xy_offset=np.array([0.0, 0.0, 0.0])
     )
     robot_left, base_pose_left = _load_robot_for_config(
-        scene, cfg_left.urdf_path, xy_offset=np.array([0.0, -0.12, 0.0])
+        scene, cfg_left.urdf_path, xy_offset=np.array([0.0, 0.0, 0.0])
     )
 
-    base_pos_right = base_pose_right.p.copy()
-    base_pos_left = base_pose_left.p.copy()
+    # 2) 기준 회전(quaternion)은 그대로 써야 하니까 따로 저장
+    base_quat_right = base_pose_right.q.copy()
+    base_quat_left = base_pose_left.q.copy()
+
+    # 3) 기준 높이(z)도 저장해 두고, 초기 y 오프셋만 살짝 줘서 안 겹치게 해놓기
+    base_height = float(base_pose_right.p[2])   # 예: -0.13 같은 값일 것
+
+    default_y_right = +0.12
+    default_y_left  = -0.12
+    base_x = 0.0
+
+    base_pos_right = np.array([base_x, default_y_right, base_height], dtype=float)
+    base_pos_left  = np.array([base_x, default_y_left,  base_height], dtype=float)
+
+    # 4) 시작할 때 한 번 초기 위치/자세 세팅
+    robot_right.set_pose(sapien.Pose(base_pos_right, base_quat_right))
+    robot_left.set_pose(sapien.Pose(base_pos_left,  base_quat_left))
+
 
     # Wrist calibration per hand (None until calibrated)
     calib_wrist_R_right = [None]
@@ -298,6 +341,8 @@ def start_retargeting(
         wrist_rot_L_raw = None
         keypoint_2d_R = None
         keypoint_2d_L = None
+        wrist_pos_world_R = None
+        wrist_pos_world_L = None
 
         for h in hands:
             handedness = h["handedness"]  # "Right" or "Left"
@@ -305,10 +350,12 @@ def start_retargeting(
                 joint_pos_R = h["joint_pos"]
                 wrist_rot_R_raw = h["wrist_rot"]
                 keypoint_2d_R = h["keypoint_2d"]
+                wrist_pos_world_R = h.get("wrist_pos_world", None)
             elif handedness == "Left":
                 joint_pos_L = h["joint_pos"]
                 wrist_rot_L_raw = h["wrist_rot"]
                 keypoint_2d_L = h["keypoint_2d"]
+                wrist_pos_world_L = h.get("wrist_pos_world", None)
 
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
@@ -334,35 +381,62 @@ def start_retargeting(
             break
 
 
-        # --- 손의 2D 위치를 이용해 로봇 손 좌우 위치 결정 ---
+        # ----- 1) 기본값 + 2D 기반 좌우(y) 이동 (기존 코드) -----
 
-        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 그대로 고정
-        base_z = base_z  # 너가 이미 쓰는 높이 값 재사용 (예: -0.13)
+        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 기본값
+        base_z_val = base_z  # 네가 이미 위에서 설정해둔 높이 값 (예: -0.13)
 
-        # 화면 기준 최대 좌우 이동 범위 (미터)
-        max_side = 0.25  # 0.25m = 25cm 왼/오른쪽으로
+        max_side = 0.25  # 화면 기준 최대 좌우 이동 범위 (미터)
 
         # 기본 위치 (손 안 보일 때)
-        y_R = +0.12
-        y_L = -0.12
+        default_y_R = +0.12
+        default_y_L = -0.12
+        y_R = default_y_R
+        y_L = default_y_L
 
+        # 2D 키포인트 기준으로 좌우를 먼저 잡아준다 (fallback)
         if keypoint_2d_R is not None:
             u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
-            # 0.0 → -max_side (왼쪽 끝), 0.5 → 0, 1.0 → +max_side (오른쪽 끝)
             y_R = (u_R - 0.5) * 2.0 * max_side
 
         if keypoint_2d_L is not None:
             u_L = keypoint_2d_L.landmark[0].x  # 0 ~ 1
             y_L = (u_L - 0.5) * 2.0 * max_side
 
-        base_pos_right = np.array([base_x, y_R, base_z], dtype=float)
-        base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
+        # 기본 x는 고정
+        x_R = base_x
+        x_L = base_x
 
+
+        # ----- 2) 3D MediaPipe 손목 좌표가 있으면, 그걸로 덮어쓰기 -----
+
+        # 스케일 튜닝용
+        scale_xy = 0.4   # 좌우 이동 크기
+        scale_x  = 0.4   # 앞뒤 이동 크기
+
+        if wrist_pos_world_R is not None:
+            mx_R, my_R, mz_R = wrist_pos_world_R  # Mediapipe world frame (대략 m 단위)
+
+            # mz_R: 카메라에서 멀어질수록 값이 커지는 방향 → SAPIEN x로
+            # mx_R: 좌우 방향 → SAPIEN y에 더해주기
+            x_R = base_x - mz_R * scale_x
+            y_R = default_y_R + mx_R * scale_xy
+
+        if wrist_pos_world_L is not None:
+            mx_L, my_L, mz_L = wrist_pos_world_L
+            x_L = base_x - mz_L * scale_x
+            y_L = default_y_L + mx_L * scale_xy
+
+        # 최종 베이스 위치
+        base_pos_right = np.array([x_R, y_R, base_z_val], dtype=float)
+        base_pos_left  = np.array([x_L, y_L, base_z_val], dtype=float)
 
 
 
 
         # ----------------- RIGHT HAND RETARGETING -----------------
+        q_final_R = base_quat_right  # 기본 회전값
+
         if joint_pos_R is not None:
             ret_type_R = retargeting_right.optimizer.retargeting_type
             indices_R = retargeting_right.optimizer.target_link_human_indices
@@ -380,21 +454,28 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
-
+            # Wrist rotation (Z축 twist만 사용)
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                R_rel_R = _simplify_wrist_rotation(R_rel_R)
-                base_T_R = base_pose_right.to_transformation_matrix()
-                R_robot0_R = base_T_R[:3, :3]
-                R_robot_R = R_rel_R @ R_robot0_R
-                q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
+                twist_R = _extract_z_twist(R_rel_R, gain=0.6)
+
+                R_base_R = rotations.matrix_from_quaternion(base_quat_right)
+                R_twist_R = rotations.matrix_from_axis_angle(
+                    np.array([0.0, 0.0, 1.0, twist_R])
+                )
+                R_final_R = R_twist_R @ R_base_R
+                q_final_R = rotations.quaternion_from_matrix(R_final_R)
+
+        # 손이 안 잡혔으면 q_final_R은 base_quat_right 그대로
+
+        # 👉 여기서 최종 위치+회전 한 번만 세팅
+        robot_right.set_pose(sapien.Pose(base_pos_right, q_final_R))
 
 
 
+        # ----------------- LEFT HAND RETARGETING -----------------
+        q_final_L = base_quat_left
 
-
-        # ----------------- LEFT HAND RETARGETING ------------------
         if joint_pos_L is not None:
             ret_type_L = retargeting_left.optimizer.retargeting_type
             indices_L = retargeting_left.optimizer.target_link_human_indices
@@ -408,31 +489,23 @@ def start_retargeting(
                     joint_pos_L[task_indices_L, :] - joint_pos_L[origin_indices_L, :]
                 )
 
-            # Fingers
             qpos_L = retargeting_left.retarget(ref_value_L)
             robot_left.set_qpos(qpos_L[retargeting_to_sapien_L])
 
-            # ----- LEFT WRIST -----
+            # Wrist rotation (Z축 twist만 사용)
             if wrist_R_L is not None and calib_wrist_R_left[0] is not None:
-                # 1) 캘리브 기준 상대 회전
                 R_rel_L = wrist_R_L @ calib_wrist_R_left[0].T
+                twist_L = _extract_z_twist(R_rel_L, gain=0.6)
 
-                # 2) 우리가 정의한 축 제한(예: Z축만, 혹은 단순화된 회전) 적용
-                R_rel_L = _simplify_wrist_rotation(R_rel_L)
+                R_base_L = rotations.matrix_from_quaternion(base_quat_left)
+                R_twist_L = rotations.matrix_from_axis_angle(
+                    np.array([0.0, 0.0, 1.0, twist_L])
+                )
+                R_final_L = R_twist_L @ R_base_L
+                q_final_L = rotations.quaternion_from_matrix(R_final_L)
 
-                # 3) 왼손 기본 자세의 회전행렬 가져오기
-                base_T_L = base_pose_left.to_transformation_matrix()
-                R_robot0_L = base_T_L[:3, :3]
-
-                # 4) 기본 회전에 상대 회전 덧붙이기
-                R_robot_L = R_rel_L @ R_robot0_L
-
-                # 5) 최종 쿼터니언 + 왼손 베이스 위치(base_pos_left)로 pose 설정
-                q_robot_L = rotations.quaternion_from_matrix(R_robot_L)
-                pose_L = sapien.Pose(base_pos_left, q_robot_L)
-                robot_left.set_pose(pose_L)
-
-
+        # 왼손은 회전 고정이면 이거 한 줄로 끝
+        robot_left.set_pose(sapien.Pose(base_pos_left, q_final_L))
 
 
         # Render a few times for smoother display
