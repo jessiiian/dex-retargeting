@@ -276,8 +276,9 @@ def start_retargeting(
     ).astype(int)
 
     # ---- Shadow wrist joints (example for right hand) ----
-    if "shadow" in robot_name.lower():
-        if "right" in robot_name.lower():
+    robot_name_str = str(robot_name.value).lower()
+    if "shadow" in robot_name_str:
+        if "right" in robot_name_str:
             wrist_joint_names = ["rh_WRJ1", "rh_WRJ2"]
         else:
             wrist_joint_names = ["lh_WRJ1", "lh_WRJ2"]
@@ -399,16 +400,29 @@ def start_retargeting(
             full_qpos = qpos_R[retargeting_to_sapien_R].copy()
 
             # ---- [TEST] Shadow wrist demo: swing WRJ1 sinusoidally ----
-            if wrist_idx_in_robot.size > 0:
-                t = time.time()
-                # -0.5 ~ +0.5 rad 정도로 위아래 까딱
-                wrist_angle = 0.5 * np.sin(2.0 * np.pi * 0.5 * t)  # 0.5Hz
+            TEST_WRIST_ONLY = True  # ← 일단 True로 켜놓고 테스트
 
-                # 첫 번째 손목 조인트(보통 WRJ1)에 각도 넣기
-                full_qpos[wrist_idx_in_robot[0]] = wrist_angle
-                # 두 번째(WRJ2)는 일단 0으로 둬도 됨 (원하면 좌우 스윙도 줄 수 있음)
+        if TEST_WRIST_ONLY and wrist_idx_in_robot.size > 0:
+            # 손가락은 전부 기본값(0)으로 두고
+            full_qpos = np.zeros(robot_right.dof, dtype=float)
+
+            t = time.time()
+            # 손목 1: 위아래로 크게 (WRJ1)
+            angle1 = 0.8 * np.sin(2.0 * np.pi * 0.5 * t)  # ±0.8 rad, 0.5Hz
+            # 손목 2: 좌우로 약간 (WRJ2)
+            angle2 = 0.5 * np.sin(2.0 * np.pi * 0.5 * t + np.pi / 2.0)
+
+            full_qpos[wrist_idx_in_robot[0]] = angle1
+            if wrist_idx_in_robot.size > 1:
+                full_qpos[wrist_idx_in_robot[1]] = angle2
 
             robot_right.set_qpos(full_qpos)
+
+            # 이 프레임에서는 retargeting, wrist_R, set_pose 이런 나머지 로직 스킵
+            for _ in range(2):
+                viewer.render()
+            continue
+
             # robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
 
