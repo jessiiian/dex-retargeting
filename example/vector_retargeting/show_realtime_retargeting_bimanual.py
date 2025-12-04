@@ -470,18 +470,15 @@ def start_retargeting(
                 robot_right.set_qpos(full_qpos)
 
 
-
-            # if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-            #     R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-            #     R_rel_R = _simplify_wrist_rotation(R_rel_R)
-            #     base_T_R = base_pose_right.to_transformation_matrix()
-            #     R_robot0_R = base_T_R[:3, :3]
-            #     R_robot_R = R_rel_R @ R_robot0_R
-            #     q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-            #     robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
-
-
-
+            if robot_name != RobotName.shadow:
+                if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
+                    R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+                    R_rel_R = _simplify_wrist_rotation(R_rel_R)
+                    base_T_R = base_pose_right.to_transformation_matrix()
+                    R_robot0_R = base_T_R[:3, :3]
+                    R_robot_R = R_rel_R @ R_robot0_R
+                    q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
+                    robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
 
 
         # ----------------- LEFT HAND RETARGETING ------------------
