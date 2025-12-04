@@ -275,6 +275,24 @@ def start_retargeting(
         [retargeting_joint_names_L.index(name) for name in sapien_joint_names_L]
     ).astype(int)
 
+    # ---- Shadow wrist joints (example for right hand) ----
+    if "shadow" in robot_name.lower():
+        if "right" in robot_name.lower():
+            wrist_joint_names = ["rh_WRJ1", "rh_WRJ2"]
+        else:
+            wrist_joint_names = ["lh_WRJ1", "lh_WRJ2"]
+
+        wrist_idx_in_robot = []
+        for jn in wrist_joint_names:
+            if jn in sapien_joint_names_R:
+                wrist_idx_in_robot.append(sapien_joint_names_R.index(jn))
+            else:
+                print(f"[WARN] wrist joint {jn} not found in robot joints")
+        wrist_idx_in_robot = np.array(wrist_idx_in_robot, dtype=int)
+    else:
+        wrist_idx_in_robot = np.array([], dtype=int)
+
+
     while True:
         try:
             bgr = queue.get(timeout=5)
@@ -378,7 +396,20 @@ def start_retargeting(
 
             # Fingers
             qpos_R = retargeting_right.retarget(ref_value_R)
-            robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
+            full_qpos = qpos_R[retargeting_to_sapien_R].copy()
+
+            # ---- [TEST] Shadow wrist demo: swing WRJ1 sinusoidally ----
+            if wrist_idx_in_robot.size > 0:
+                t = time.time()
+                # -0.5 ~ +0.5 rad 정도로 위아래 까딱
+                wrist_angle = 0.5 * np.sin(2.0 * np.pi * 0.5 * t)  # 0.5Hz
+
+                # 첫 번째 손목 조인트(보통 WRJ1)에 각도 넣기
+                full_qpos[wrist_idx_in_robot[0]] = wrist_angle
+                # 두 번째(WRJ2)는 일단 0으로 둬도 됨 (원하면 좌우 스윙도 줄 수 있음)
+
+            robot_right.set_qpos(full_qpos)
+            # robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
 
             if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
