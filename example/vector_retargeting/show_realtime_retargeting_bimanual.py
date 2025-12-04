@@ -412,6 +412,9 @@ def start_retargeting(
             gap = min_gap + gain_gap * dx
             gap = float(np.clip(gap, min_gap, max_gap))
 
+            # 🔍 디버그
+            logger.info(f"dx={dx:.4f}, gap={gap:.4f}")
+
             # 화면 기준 좌우 대칭 배치
             y_R = +gap / 2.0
             y_L = -gap / 2.0
