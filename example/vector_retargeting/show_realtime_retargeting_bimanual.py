@@ -315,6 +315,8 @@ def start_retargeting(
         wrist_rot_L_raw = None
         keypoint_2d_R = None
         keypoint_2d_L = None
+        wrist_pos_world_R = None
+        wrist_pos_world_L = None
 
         for h in hands:
             handedness = h["handedness"]  # "Right" or "Left"
@@ -322,10 +324,12 @@ def start_retargeting(
                 joint_pos_R = h["joint_pos"]
                 wrist_rot_R_raw = h["wrist_rot"]
                 keypoint_2d_R = h["keypoint_2d"]
+                wrist_pos_world_R = h.get("wrist_pos_world", None)
             elif handedness == "Left":
                 joint_pos_L = h["joint_pos"]
                 wrist_rot_L_raw = h["wrist_rot"]
                 keypoint_2d_L = h["keypoint_2d"]
+                wrist_pos_world_L = h.get("wrist_pos_world", None)
 
         wrist_R_R = _wrist_rot_to_matrix(wrist_rot_R_raw)
         wrist_R_L = _wrist_rot_to_matrix(wrist_rot_L_raw)
@@ -351,29 +355,57 @@ def start_retargeting(
             break
 
 
-        # --- 손의 2D 위치를 이용해 로봇 손 좌우 위치 결정 ---
+        # ----- 1) 기본값 + 2D 기반 좌우(y) 이동 (기존 코드) -----
 
-        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 그대로 고정
-        base_z = base_z  # 너가 이미 쓰는 높이 값 재사용 (예: -0.13)
+        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 기본값
+        base_z_val = base_z  # 네가 이미 위에서 설정해둔 높이 값 (예: -0.13)
 
-        # 화면 기준 최대 좌우 이동 범위 (미터)
-        max_side = 0.25  # 0.25m = 25cm 왼/오른쪽으로
+        max_side = 0.25  # 화면 기준 최대 좌우 이동 범위 (미터)
 
         # 기본 위치 (손 안 보일 때)
-        y_R = +0.12
-        y_L = -0.12
+        default_y_R = +0.12
+        default_y_L = -0.12
+        y_R = default_y_R
+        y_L = default_y_L
 
+        # 2D 키포인트 기준으로 좌우를 먼저 잡아준다 (fallback)
         if keypoint_2d_R is not None:
             u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
-            # 0.0 → -max_side (왼쪽 끝), 0.5 → 0, 1.0 → +max_side (오른쪽 끝)
             y_R = (u_R - 0.5) * 2.0 * max_side
 
         if keypoint_2d_L is not None:
             u_L = keypoint_2d_L.landmark[0].x  # 0 ~ 1
             y_L = (u_L - 0.5) * 2.0 * max_side
 
-        base_pos_right = np.array([base_x, y_R, base_z], dtype=float)
-        base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
+        # 기본 x는 고정
+        x_R = base_x
+        x_L = base_x
+
+
+        # ----- 2) 3D MediaPipe 손목 좌표가 있으면, 그걸로 덮어쓰기 -----
+
+        # 스케일 튜닝용
+        scale_xy = 0.4   # 좌우 이동 크기
+        scale_x  = 0.4   # 앞뒤 이동 크기
+
+        if wrist_pos_world_R is not None:
+            mx_R, my_R, mz_R = wrist_pos_world_R  # Mediapipe world frame (대략 m 단위)
+
+            # mz_R: 카메라에서 멀어질수록 값이 커지는 방향 → SAPIEN x로
+            # mx_R: 좌우 방향 → SAPIEN y에 더해주기
+            x_R = base_x - mz_R * scale_x
+            y_R = default_y_R + mx_R * scale_xy
+
+        if wrist_pos_world_L is not None:
+            mx_L, my_L, mz_L = wrist_pos_world_L
+            x_L = base_x - mz_L * scale_x
+            y_L = default_y_L + mx_L * scale_xy
+
+        # 최종 베이스 위치
+        base_pos_right = np.array([x_R, y_R, base_z_val], dtype=float)
+        base_pos_left  = np.array([x_L, y_L, base_z_val], dtype=float)
+
+
 
         robot_right.set_pose(sapien.Pose(base_pos_right, base_quat_right))
         robot_left.set_pose(sapien.Pose(base_pos_left,  base_quat_left))
