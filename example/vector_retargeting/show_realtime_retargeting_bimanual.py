@@ -413,41 +413,44 @@ def start_retargeting(
         #######
         if joint_pos_R is not None:
             # ---------- 1) 손가락 retargeting ----------
-            retargeting_type = retargeting_right.optimizer.retargeting_type
-            indices = retargeting_right.optimizer.target_link_human_indices
+            ret_type_R = retargeting_right.optimizer.retargeting_type
+            indices_R = retargeting_right.optimizer.target_link_human_indices
 
-            if retargeting_type == "POSITION":
-                ref_value = joint_pos_R[indices, :]
+            if ret_type_R == "POSITION":
+                ref_value_R = joint_pos_R[indices_R, :]
             else:
-                origin_indices = indices[0, :]
-                task_indices = indices[1, :]
-                ref_value = joint_pos_R[task_indices, :] - joint_pos_R[origin_indices, :]
-            # retargeting에서 나온 qpos는 "retargeting_joint_names" 순서
-            qpos = retargeting_right.retarget(ref_value)
+                origin_indices_R = indices_R[0, :]
+                task_indices_R = indices_R[1, :]
+                ref_value_R = joint_pos_R[task_indices_R, :] - joint_pos_R[origin_indices_R, :]
 
-            # 로봇 전체 dof 배열 생성 후, 손가락 부분 채우기
-            full_qpos = np.zeros(robot_right.dof, dtype=float)
-            full_qpos[retargeting_to_sapien_R] = qpos
+            # retargeting에서 나온 qpos (길이 = len(retargeting_joint_names_R))
+            qpos_R = retargeting_right.retarget(ref_value_R)
 
-            # ---------- 2) 손목(MediaPipe) → Shadow 손목 조인트 ----------
+            # 로봇 전체 DOF 배열 가져오기 (기존 값 유지한 채 일부만 갱신)
+            full_qpos = robot_right.get_qpos().copy()
+
+            # 오른손 joint 위치에만 손가락 qpos 채워넣기
+            # right_joint_indices: 로봇 qpos에서 오른손 joint 인덱스들
+            # retargeting_to_sapien_R: 그 인덱스에 대응하는 qpos_R 인덱스
+            full_qpos[wrist_idx_in_robot[0]] = qpos_R[retargeting_to_sapien_R]
+
+            # ---------- 2) MediaPipe → 손목 각도 계산 ----------
             if (
                 wrist_R_R is not None
                 and calib_wrist_R_right[0] is not None
                 and wrist_idx_in_robot.size > 0
             ):
-                # 상대 회전 (현재 손목 vs 캘리브 기준자세)
-                R_rel = wrist_R_R @ calib_wrist_R_right[0].T
+                R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+                flex, dev = _wrist_rel_to_shadow_angles(R_rel_R)
 
-                # 상대 회전을 Shadow 손목 두 조인트 각도로 변환
-                flex, dev = _wrist_rel_to_shadow_angles(R_rel)
-
-                # rh_WRJ1, rh_WRJ2에 꽂기
+                # rh_WRJ1, rh_WRJ2에 덮어쓰기
                 full_qpos[wrist_idx_in_robot[0]] = flex
                 if wrist_idx_in_robot.size > 1:
                     full_qpos[wrist_idx_in_robot[1]] = dev
 
             # ---------- 3) 최종 qpos 적용 ----------
             robot_right.set_qpos(full_qpos)
+
 
 
         if robot_name != RobotName.shadow:
