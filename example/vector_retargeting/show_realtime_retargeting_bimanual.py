@@ -158,6 +158,45 @@ def _load_robot_for_config(
     return robot, base_pose
 
 
+def _wrist_rel_to_shadow_angles(
+    R_rel: np.ndarray,
+    pitch_gain: float = 1.2,
+    yaw_gain: float = 1.0,
+) -> tuple[float, float]:
+    """MediaPipe 기준 상대 회전행렬 R_rel → Shadow 손목 조인트 각도 2개로 변환.
+
+    반환:
+        flex (WRJ1 쪽, 손목 위/아래 꺾기)
+        dev  (WRJ2 쪽, 손목 좌/우 꺾기)
+    """
+    R_rel = np.asarray(R_rel, dtype=float)
+    if R_rel.shape != (3, 3) or not np.all(np.isfinite(R_rel)):
+        return 0.0, 0.0
+
+    # 수치 잡음 제거 겸 진짜 회전행렬로 정규화
+    U, _, Vt = np.linalg.svd(R_rel)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R[:, 2] *= -1
+
+    # XYZ(0,1,2) intrinsic 회전으로 euler 추출
+    # angles[0] = x축, angles[1] = y축, angles[2] = z축 회전
+    ax, ay, az = rotations.euler_from_matrix(R, 0, 1, 2, extrinsic=False)
+
+    # Shadow 손목 감각에 맞게 축/부호/스케일 튜닝 (필요시 gain/부호 조정)
+    # 대충:
+    # - ay: 손을 위/아래로 까딱 (pitch)
+    # - az: 손을 안/밖으로 비틀기 (yaw 비슷)
+    flex = -ay * pitch_gain  # 부호 뒤집어서 "내 쪽으로 꺾으면 로봇도 내 쪽"
+    dev = az * yaw_gain
+
+    # 조인트 안전 범위 클리핑 (필요시 숫자 조정)
+    flex = float(np.clip(flex, -0.9, 0.9))
+    dev = float(np.clip(dev,  -0.8, 0.8))
+
+    return flex, dev
+
+
 # ---------------------------------------------------------------------------
 # Main retargeting process (bimanual, 5s auto-calibration)
 # ---------------------------------------------------------------------------
@@ -212,7 +251,7 @@ def start_retargeting(
     render_mat.metallic = 0.0
     render_mat.roughness = 0.9
     render_mat.specular = 0.8
-    scene.add_ground(-0.2, render_material=render_mat, render_half_size=[1000, 1000])
+    # scene.add_ground(-0.2, render_material=render_mat, render_half_size=[1000, 1000])
 
     # Lighting
     scene.add_directional_light(np.array([1, 1, -1]), np.array([3, 3, 3]))
@@ -275,25 +314,15 @@ def start_retargeting(
         [retargeting_joint_names_L.index(name) for name in sapien_joint_names_L]
     ).astype(int)
 
-    # ---- Shadow wrist joints (example for right hand) ----
-    robot_name_str = str(robot_name.value).lower()
-    if "shadow" in robot_name_str:
-        if "right" in robot_name_str:
-            wrist_joint_names = ["rh_WRJ1", "rh_WRJ2"]
-        else:
-            wrist_joint_names = ["lh_WRJ1", "lh_WRJ2"]
-
-        logger.error("wrist joint names: " + {wrist_joint_names})
-
-        wrist_idx_in_robot = []
-        for jn in wrist_joint_names:
-            if jn in sapien_joint_names_R:
-                wrist_idx_in_robot.append(sapien_joint_names_R.index(jn))
-            else:
-                print(f"[WARN] wrist joint {jn} not found in robot joints")
-        wrist_idx_in_robot = np.array(wrist_idx_in_robot, dtype=int)
-    else:
-        wrist_idx_in_robot = np.array([], dtype=int)
+    wrist_idx_in_robot = np.array(
+        [
+            i
+            for i, name in enumerate(sapien_joint_names_R)
+            if "wrj" in name.lower()   # rh_WRJ1, rh_WRJ2 등
+        ],
+        dtype=int,
+    )
+    logger.info(f"wrist_idx_in_robot = {wrist_idx_in_robot}")
 
 
     while True:
@@ -401,41 +430,55 @@ def start_retargeting(
             qpos_R = retargeting_right.retarget(ref_value_R)
             full_qpos = qpos_R[retargeting_to_sapien_R].copy()
 
-            # ---- [TEST] Shadow wrist demo: swing WRJ1 sinusoidally ----
-            TEST_WRIST_ONLY = True  # ← 일단 True로 켜놓고 테스트
+            #######
+            if joint_pos_R is not None:
+                # ---------- 1) 손가락 retargeting ----------
+                retargeting_type = retargeting_right.optimizer.retargeting_type
+                indices = retargeting_right.optimizer.target_link_human_indices
 
-            if TEST_WRIST_ONLY and wrist_idx_in_robot.size > 0:
-                # 손가락은 전부 기본값(0)으로 두고
+                if retargeting_type == "POSITION":
+                    ref_value = joint_pos_R[indices, :]
+                else:
+                    origin_indices = indices[0, :]
+                    task_indices = indices[1, :]
+                    ref_value = joint_pos_R[task_indices, :] - joint_pos_R[origin_indices, :]
+                # retargeting에서 나온 qpos는 "retargeting_joint_names" 순서
+                qpos = retargeting_right.retarget(ref_value)
+
+                # 로봇 전체 dof 배열 생성 후, 손가락 부분 채우기
                 full_qpos = np.zeros(robot_right.dof, dtype=float)
+                full_qpos[retargeting_to_sapien_R] = qpos
 
-                t = time.time()
-                # 손목 1: 위아래로 크게 (WRJ1)
-                angle1 = 0.8 * np.sin(2.0 * np.pi * 0.5 * t)  # ±0.8 rad, 0.5Hz
-                # 손목 2: 좌우로 약간 (WRJ2)
-                angle2 = 0.5 * np.sin(2.0 * np.pi * 0.5 * t + np.pi / 2.0)
+                # ---------- 2) 손목(MediaPipe) → Shadow 손목 조인트 ----------
+                if (
+                    wrist_R_R is not None
+                    and calib_wrist_R_right[0] is not None
+                    and wrist_idx_in_robot.size > 0
+                ):
+                    # 상대 회전 (현재 손목 vs 캘리브 기준자세)
+                    R_rel = wrist_R_R @ calib_wrist_R_right[0].T
 
-                full_qpos[wrist_idx_in_robot[0]] = angle1
-                if wrist_idx_in_robot.size > 1:
-                    full_qpos[wrist_idx_in_robot[1]] = angle2
+                    # 상대 회전을 Shadow 손목 두 조인트 각도로 변환
+                    flex, dev = _wrist_rel_to_shadow_angles(R_rel)
 
+                    # rh_WRJ1, rh_WRJ2에 꽂기
+                    full_qpos[wrist_idx_in_robot[0]] = flex
+                    if wrist_idx_in_robot.size > 1:
+                        full_qpos[wrist_idx_in_robot[1]] = dev
+
+                # ---------- 3) 최종 qpos 적용 ----------
                 robot_right.set_qpos(full_qpos)
 
-                # 이 프레임에서는 retargeting, wrist_R, set_pose 이런 나머지 로직 스킵
-                for _ in range(2):
-                    viewer.render()
-                continue
-
-            # robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
 
 
-            if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
-                R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
-                R_rel_R = _simplify_wrist_rotation(R_rel_R)
-                base_T_R = base_pose_right.to_transformation_matrix()
-                R_robot0_R = base_T_R[:3, :3]
-                R_robot_R = R_rel_R @ R_robot0_R
-                q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
-                robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
+            # if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
+            #     R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+            #     R_rel_R = _simplify_wrist_rotation(R_rel_R)
+            #     base_T_R = base_pose_right.to_transformation_matrix()
+            #     R_robot0_R = base_T_R[:3, :3]
+            #     R_robot_R = R_rel_R @ R_robot0_R
+            #     q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
+            #     robot_right.set_pose(sapien.Pose(base_pos_right, q_robot_R))
 
 
 
