@@ -388,8 +388,8 @@ def start_retargeting(
 
         # 손 사이 기본 간격 + 얼마나 과장할지
         min_gap  = 0.22              # 손이 거의 붙었을 때 최소 간격 (m)
-        gain_gap = 1.8               # 실제 거리(dx)에 곱해서 과장하는 비율
-        max_gap  = 0.60              # 너무 멀어지지 않도록 상한 (m)
+        gain_gap = 5.0               # 실제 거리(dx)에 곱해서 과장하는 비율
+        max_gap  = 0.80              # 너무 멀어지지 않도록 상한 (m)
 
         # 앞뒤 스케일 (손을 앞으로/뒤로 빼는 동작)
         scale_x = 1.2                # mz → SAPIEN x 로 매핑할 때 크기
@@ -423,30 +423,30 @@ def start_retargeting(
             x_R = base_x + mz_R * scale_x
             x_L = base_x + mz_L * scale_x
 
-        else:
-            # ----- 2) 한 손만 보이거나, 3D가 없으면: 기존 2D fallback -----
-            max_side = 0.25  # 좌우 최대 이동
+        # else:
+        #     # ----- 2) 한 손만 보이거나, 3D가 없으면: 기존 2D fallback -----
+        #     max_side = 0.25  # 좌우 최대 이동
 
-            default_y_R = +0.12
-            default_y_L = -0.12
-            y_R = default_y_R
-            y_L = default_y_L
+        #     default_y_R = +0.12
+        #     default_y_L = -0.12
+        #     y_R = default_y_R
+        #     y_L = default_y_L
 
-            if keypoint_2d_R is not None:
-                u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
-                y_R = (u_R - 0.5) * 2.0 * max_side
+        #     if keypoint_2d_R is not None:
+        #         u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
+        #         y_R = (u_R - 0.5) * 2.0 * max_side
 
-            if keypoint_2d_L is not None:
-                u_L = keypoint_2d_L.landmark[0].x
-                y_L = (u_L - 0.5) * 2.0 * max_side
+        #     if keypoint_2d_L is not None:
+        #         u_L = keypoint_2d_L.landmark[0].x
+        #         y_L = (u_L - 0.5) * 2.0 * max_side
 
-            # 앞/뒤는 그래도 3D 있으면 써준다
-            if wrist_pos_world_R is not None:
-                _, _, mz_R = wrist_pos_world_R
-                x_R = base_x + mz_R * scale_x
-            if wrist_pos_world_L is not None:
-                _, _, mz_L = wrist_pos_world_L
-                x_L = base_x + mz_L * scale_x
+        #     # 앞/뒤는 그래도 3D 있으면 써준다
+        #     if wrist_pos_world_R is not None:
+        #         _, _, mz_R = wrist_pos_world_R
+        #         x_R = base_x + mz_R * scale_x
+        #     if wrist_pos_world_L is not None:
+        #         _, _, mz_L = wrist_pos_world_L
+        #         x_L = base_x + mz_L * scale_x
 
         # 최종 베이스 위치
         base_pos_right = np.array([x_R, y_R, base_z_val], dtype=float)
