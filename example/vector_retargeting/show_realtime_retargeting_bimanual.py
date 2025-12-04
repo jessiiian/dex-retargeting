@@ -344,15 +344,6 @@ def start_retargeting(
     )
     logger.info(f"wrist_idx_in_robot = {wrist_idx_in_robot}")
 
-
-    # 오른손 로봇 로드 직후
-    robot_right = loader.load(filepath_right)
-    robot_right.set_pose(sapien.Pose([0, 0, -0.15]))  # 예시
-
-    base_pose_right = robot_right.get_pose()
-    base_pos_right = base_pose_right.p.copy()
-
-
     while True:
         try:
             bgr = queue.get(timeout=5)
@@ -453,32 +444,52 @@ def start_retargeting(
 
             # retargeting에서 나온 qpos (길이 = len(retargeting_joint_names_R))
             qpos_R = retargeting_right.retarget(ref_value_R)
+            robot_right.set_qpos(qpos_R[retargeting_to_sapien_R])
             # Start from current robot qpos (keep everything else)
-            full_qpos_R = robot_right.get_qpos().copy()
+            # full_qpos_R = robot_right.get_qpos().copy()
 
-            # Fill finger joints using the existing mapping
-            full_qpos_R[:] = 0.0  # if this robot is only the hand, you can zero first
-            full_qpos_R[:] = robot_right.get_qpos()  # or keep other joints if any
-            full_qpos_R[:] = robot_right.get_qpos()  # (idempotent, safe)
+            # # Fill finger joints using the existing mapping
+            # full_qpos_R[:] = 0.0  # if this robot is only the hand, you can zero first
+            # full_qpos_R[:] = robot_right.get_qpos()  # or keep other joints if any
+            # full_qpos_R[:] = robot_right.get_qpos()  # (idempotent, safe)
 
-            # Overwrite finger joints with retargeting values
-            full_qpos_R[retargeting_to_sapien_R] = qpos_R
+            # # Overwrite finger joints with retargeting values
+            # full_qpos_R[retargeting_to_sapien_R] = qpos_R
 
-            # 2) Wrist: use MediaPipe rotation if available
-            if wrist_R_R is not None and calib_wrist_R_right[0] is not None and wrist_idx_R.size > 0:
+            # # 2) Wrist: use MediaPipe rotation if available
+            # if wrist_R_R is not None and calib_wrist_R_right[0] is not None and wrist_idx_R.size > 0:
+            #     R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
+
+            #     flex, dev = _wrist_rel_to_shadow_angles(R_rel_R)
+
+            #     # First wrist joint (e.g. rh_WRJ1): flexion/extension
+            #     full_qpos_R[wrist_idx_R[0]] = flex
+
+            #     # Second wrist joint (e.g. rh_WRJ2): deviation/twist (if exists)
+            #     if wrist_idx_R.size > 1:
+            #         full_qpos_R[wrist_idx_R[1]] = dev
+
+            # # 3) Apply combined qpos (fingers + wrist) to right hand
+            # robot_right.set_qpos(full_qpos_R)
+
+            if wrist_R_R is not None and calib_wrist_R_right[0] is not None:
+                # 1) 상대 회전
                 R_rel_R = wrist_R_R @ calib_wrist_R_right[0].T
 
-                flex, dev = _wrist_rel_to_shadow_angles(R_rel_R)
+                # 2) 축 정리 (원하면, 아니면 빼도 됨)
+                R_rel_R = _simplify_wrist_rotation(R_rel_R)
 
-                # First wrist joint (e.g. rh_WRJ1): flexion/extension
-                full_qpos_R[wrist_idx_R[0]] = flex
+                # 3) 기본 회전은 base_pose_right에서 가져옴
+                base_T_R = base_pose_right.to_transformation_matrix()
+                R_robot0_R = base_T_R[:3, :3]
 
-                # Second wrist joint (e.g. rh_WRJ2): deviation/twist (if exists)
-                if wrist_idx_R.size > 1:
-                    full_qpos_R[wrist_idx_R[1]] = dev
+                R_robot_R = R_rel_R @ R_robot0_R
+                q_robot_R = rotations.quaternion_from_matrix(R_robot_R)
 
-            # 3) Apply combined qpos (fingers + wrist) to right hand
-            robot_right.set_qpos(full_qpos_R)
+                # 4) 위치는 네가 쓰는 base_pos_right 사용
+                pose_R = sapien.Pose(base_pos_right, q_robot_R)
+                robot_right.set_pose(pose_R)
+
 
 
 
