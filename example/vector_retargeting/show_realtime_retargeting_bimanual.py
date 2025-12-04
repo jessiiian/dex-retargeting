@@ -381,55 +381,74 @@ def start_retargeting(
             break
 
 
-        # ----- 1) 기본값 + 2D 기반 좌우(y) 이동 (기존 코드) -----
+        # ----- 손 베이스 위치 결정 (양손 사이 거리 과장 버전) -----
 
-        base_x = 0.0   # 앞/뒤 (카메라에서 거리감) – 기본값
-        base_z_val = base_z  # 네가 이미 위에서 설정해둔 높이 값 (예: -0.13)
+        base_x = 0.0                 # 앞/뒤(카메라 방향)
+        base_z_val = base_z          # 위에서 정해둔 높이 (예: -0.13)
 
-        max_side = 0.25  # 화면 기준 최대 좌우 이동 범위 (미터)
+        # 손 사이 기본 간격 + 얼마나 과장할지
+        min_gap  = 0.22              # 손이 거의 붙었을 때 최소 간격 (m)
+        gain_gap = 1.8               # 실제 거리(dx)에 곱해서 과장하는 비율
+        max_gap  = 0.60              # 너무 멀어지지 않도록 상한 (m)
 
-        # 기본 위치 (손 안 보일 때)
-        default_y_R = +0.12
-        default_y_L = -0.12
-        y_R = default_y_R
-        y_L = default_y_L
+        # 앞뒤 스케일 (손을 앞으로/뒤로 빼는 동작)
+        scale_x = 1.2                # mz → SAPIEN x 로 매핑할 때 크기
 
-        # 2D 키포인트 기준으로 좌우를 먼저 잡아준다 (fallback)
-        if keypoint_2d_R is not None:
-            u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
-            y_R = (u_R - 0.5) * 2.0 * max_side
-
-        if keypoint_2d_L is not None:
-            u_L = keypoint_2d_L.landmark[0].x  # 0 ~ 1
-            y_L = (u_L - 0.5) * 2.0 * max_side
-
-        # 기본 x는 고정
+        # 기본값: 손이 하나만 보이거나 아예 없을 때
+        y_R = +min_gap / 2.0
+        y_L = -min_gap / 2.0
         x_R = base_x
         x_L = base_x
 
-
-        # ----- 2) 3D MediaPipe 손목 좌표가 있으면, 그걸로 덮어쓰기 -----
-
-        # 스케일 튜닝용
-        scale_xy = 0.4   # 좌우 이동 크기
-        scale_x  = 1.2   # 앞뒤 이동 크기
-
-        if wrist_pos_world_R is not None:
-            mx_R, my_R, mz_R = wrist_pos_world_R  # Mediapipe world frame (대략 m 단위)
-
-            # mz_R: 카메라에서 멀어질수록 값이 커지는 방향 → SAPIEN x로
-            # mx_R: 좌우 방향 → SAPIEN y에 더해주기
-            x_R = base_x + mz_R * scale_x
-            y_R = default_y_R + mx_R * scale_xy
-
-        if wrist_pos_world_L is not None:
+        # ----- 1) 두 손목 3D 좌표가 모두 있을 때: "극적으로" 벌어지게 -----
+        if wrist_pos_world_R is not None and wrist_pos_world_L is not None:
+            mx_R, my_R, mz_R = wrist_pos_world_R
             mx_L, my_L, mz_L = wrist_pos_world_L
+
+            # Mediapipe world 좌표에서 좌우 거리 (x축 차이)
+            dx = float(abs(mx_R - mx_L))
+
+            # 손 사이 간격 = 최소 + (실제 거리 * 과장 비율)
+            gap = min_gap + gain_gap * dx
+            gap = float(np.clip(gap, min_gap, max_gap))
+
+            # 화면 기준 좌우 대칭 배치
+            y_R = +gap / 2.0
+            y_L = -gap / 2.0
+
+            # 앞/뒤(위/아래 느낌)는 z값으로
+            x_R = base_x + mz_R * scale_x
             x_L = base_x + mz_L * scale_x
-            y_L = default_y_L + mx_L * scale_xy
+
+        else:
+            # ----- 2) 한 손만 보이거나, 3D가 없으면: 기존 2D fallback -----
+            max_side = 0.25  # 좌우 최대 이동
+
+            default_y_R = +0.12
+            default_y_L = -0.12
+            y_R = default_y_R
+            y_L = default_y_L
+
+            if keypoint_2d_R is not None:
+                u_R = keypoint_2d_R.landmark[0].x  # 0 ~ 1
+                y_R = (u_R - 0.5) * 2.0 * max_side
+
+            if keypoint_2d_L is not None:
+                u_L = keypoint_2d_L.landmark[0].x
+                y_L = (u_L - 0.5) * 2.0 * max_side
+
+            # 앞/뒤는 그래도 3D 있으면 써준다
+            if wrist_pos_world_R is not None:
+                _, _, mz_R = wrist_pos_world_R
+                x_R = base_x + mz_R * scale_x
+            if wrist_pos_world_L is not None:
+                _, _, mz_L = wrist_pos_world_L
+                x_L = base_x + mz_L * scale_x
 
         # 최종 베이스 위치
         base_pos_right = np.array([x_R, y_R, base_z_val], dtype=float)
         base_pos_left  = np.array([x_L, y_L, base_z_val], dtype=float)
+
 
 
 
