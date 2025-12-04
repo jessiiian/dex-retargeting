@@ -238,16 +238,33 @@ def start_retargeting(
     viewer.control_window.toggle_camera_lines(False)
     viewer.set_camera_pose(cam.get_local_pose())
 
-    # Load right/left robots with a small Y-offset so they don't overlap
+    # 1) 처음에는 가운데에 두 손을 거의 같은 위치에 로드
+    #    (y 오프셋은 일단 0으로 두고, 나중에 frame 루프에서 우리가 직접 y를 움직일 거야)
     robot_right, base_pose_right = _load_robot_for_config(
-        scene, cfg_right.urdf_path, xy_offset=np.array([0.0, +0.12, 0.0])
+        scene, cfg_right.urdf_path, xy_offset=np.array([0.0, 0.0, 0.0])
     )
     robot_left, base_pose_left = _load_robot_for_config(
-        scene, cfg_left.urdf_path, xy_offset=np.array([0.0, -0.12, 0.0])
+        scene, cfg_left.urdf_path, xy_offset=np.array([0.0, 0.0, 0.0])
     )
 
-    base_pos_right = base_pose_right.p.copy()
-    base_pos_left = base_pose_left.p.copy()
+    # 2) 기준 회전(quaternion)은 그대로 써야 하니까 따로 저장
+    base_quat_right = base_pose_right.q.copy()
+    base_quat_left = base_pose_left.q.copy()
+
+    # 3) 기준 높이(z)도 저장해 두고, 초기 y 오프셋만 살짝 줘서 안 겹치게 해놓기
+    base_height = float(base_pose_right.p[2])   # 예: -0.13 같은 값일 것
+
+    default_y_right = +0.12
+    default_y_left  = -0.12
+    base_x = 0.0
+
+    base_pos_right = np.array([base_x, default_y_right, base_height], dtype=float)
+    base_pos_left  = np.array([base_x, default_y_left,  base_height], dtype=float)
+
+    # 4) 시작할 때 한 번 초기 위치/자세 세팅
+    robot_right.set_pose(sapien.Pose(base_pos_right, base_quat_right))
+    robot_left.set_pose(sapien.Pose(base_pos_left,  base_quat_left))
+
 
     # Wrist calibration per hand (None until calibrated)
     calib_wrist_R_right = [None]
@@ -358,7 +375,8 @@ def start_retargeting(
         base_pos_right = np.array([base_x, y_R, base_z], dtype=float)
         base_pos_left  = np.array([base_x, y_L, base_z], dtype=float)
 
-
+        robot_right.set_pose(sapien.Pose(base_pos_right, base_quat_right))
+        robot_left.set_pose(sapien.Pose(base_pos_left,  base_quat_left))
 
 
 
