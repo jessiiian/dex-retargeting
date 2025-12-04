@@ -212,7 +212,7 @@ def start_retargeting(
     render_mat.metallic = 0.0
     render_mat.roughness = 0.9
     render_mat.specular = 0.8
-    scene.add_ground(-0.2, render_material=render_mat, render_half_size=[1000, 1000])
+    # scene.add_ground(-0.2, render_material=render_mat, render_half_size=[1000, 1000])
 
     # Lighting
     scene.add_directional_light(np.array([1, 1, -1]), np.array([3, 3, 3]))
